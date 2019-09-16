@@ -38,7 +38,7 @@ class TextSequence(Dataset):
         label: List[int] = int_list[:-1] + [self.vocab.pad]
 
         return {"data": torch.tensor(int_list),
-                "label": torch.tensor(label)}
+                "labels": torch.tensor(label)}
 
     def __len__(self):
         return len(self.sequence)
