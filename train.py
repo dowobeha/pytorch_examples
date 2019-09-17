@@ -67,8 +67,6 @@ def train_lm(*, path: str,
             assert predictions.shape == torch.Size([actual_batch_size*words.max_len, vocab_size])
 
             labels: torch.Tensor = training_labels.reshape(shape=(actual_batch_size * words.max_len,))
-            # print(f"prediction={predictions[1]}")
-            #print(f"label={labels}")
             assert labels.shape == torch.Size([actual_batch_size * words.max_len])
 
             loss = cross_entropy(input=predictions,
@@ -80,24 +78,27 @@ def train_lm(*, path: str,
             loss.backward()
             optimizer.step()
 
-        print(f"Epoch {epoch}\tloss {total_loss_across_batches}")
+        if epoch % 100 == 0:
+            print(f"Epoch {epoch}\tloss {total_loss_across_batches}")
 
     return lm
 
 
 if __name__ == "__main__":
 
-    lm = train_lm(path="training_data.txt",
-                  embedding_size=64,
-                  hidden_size=128,
-                  num_layers=1,
-                  batch_size=10,
-                  num_epochs=10,
-                  learning_rate=0.01,
-                  device_name="cpu")
+    import sys
 
-    for _ in range(10):
+    if len(sys.argv) == 3:
 
-        result: str = lm.generate_random_sequence()
+        print(f"Training RNN LM from {sys.argv[1]}")
+        lm: RNN_LM = train_lm(path=sys.argv[1],
+                              embedding_size=64,
+                              hidden_size=128,
+                              num_layers=1,
+                              batch_size=10,
+                              num_epochs=100,
+                              learning_rate=0.01,
+                              device_name="cpu")
 
-        print(result)
+        print(f"Saving RNN LM to {sys.argv[2]}...")
+        torch.save(lm, sys.argv[2])

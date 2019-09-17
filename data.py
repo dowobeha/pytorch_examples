@@ -35,7 +35,7 @@ class TextSequence(Dataset):
         while len(int_list) < self.max_len:
             int_list.append(self.vocab.pad)
 
-        label: List[int] = int_list[:-1] + [self.vocab.pad]
+        label: List[int] = int_list[1:] + [self.vocab.pad]
 
         return {"data": torch.tensor(int_list),
                 "labels": torch.tensor(label)}
