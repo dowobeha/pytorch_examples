@@ -29,8 +29,12 @@ def train_lm(*, path: str,
                         embedding_size=embedding_size,
                         hidden_size=hidden_size,
                         num_layers=num_layers,
-                        pad_value=words.vocab.pad)
+                        pad_value=words.vocab.pad).to(device)
 
+#    print(type(device))
+#    lm.cuda(device)
+#    import sys
+#    sys.exit()
     lm.train()
 
     optimizer: Adam = Adam(lm.parameters(), lr=learning_rate)
@@ -40,10 +44,13 @@ def train_lm(*, path: str,
 
         total_loss_across_batches: float = 0.0
 
+#        print(f"Epoch {epoch}", end="\t")
+#        sys.stdout.flush()
         for batch in data:  # type: torch.Tensor
-
-            training_examples: torch.Tensor = batch["data"]
-            training_labels: torch.LongStorage = batch["labels"]
+#            print("Loading batch")
+#            sys.stdout.flush()
+            training_examples: torch.Tensor = batch["data"].to(device)
+            training_labels: torch.LongStorage = batch["labels"].to(device)
 
             # At the end of the data set, the actual batch size may be smaller than batch_size, and that's OK
             actual_batch_size: int = min(batch_size, training_examples.shape[0])
@@ -79,7 +86,8 @@ def train_lm(*, path: str,
             optimizer.step()
 
         if epoch % 100 == 0:
-            print(f"Epoch {epoch}\tloss {total_loss_across_batches}")
+            print(f"Epoch {str(epoch).zfill(len(str(num_epochs)))}\tloss {total_loss_across_batches}")
+            sys.stdout.flush()
 
     return lm
 
@@ -91,14 +99,15 @@ if __name__ == "__main__":
     if len(sys.argv) == 3:
 
         print(f"Training RNN LM from {sys.argv[1]}")
+        sys.stdout.flush()
         lm: RNN_LM = train_lm(path=sys.argv[1],
                               embedding_size=64,
                               hidden_size=128,
                               num_layers=1,
-                              batch_size=10,
-                              num_epochs=100,
-                              learning_rate=0.01,
-                              device_name="cpu")
+                              batch_size=8128,
+                              num_epochs=10000,
+                              learning_rate=0.001,
+                              device_name="cuda:0")
 
         print(f"Saving RNN LM to {sys.argv[2]}...")
         torch.save(lm, sys.argv[2])

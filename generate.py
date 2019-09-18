@@ -5,11 +5,13 @@ import torch
 from lm import RNN_LM
 
 
-def generate_random_sequence(lm: RNN_LM) -> str:
+def generate_random_sequence(lm: RNN_LM, device_name: str) -> str:
 
     from torch.nn.functional import softmax
     import numpy
 
+    device = torch.device(device_name)
+    
     lm.eval()
 
     with torch.no_grad():
@@ -25,7 +27,7 @@ def generate_random_sequence(lm: RNN_LM) -> str:
                 result += previous_character
 
             input_tensor: torch.Tensor = torch.tensor(data=[lm.vocab[previous_character]],
-                                                      dtype=torch.long).reshape(shape=(1, 1))
+                                                      dtype=torch.long).reshape(shape=(1, 1)).to(device)
             assert input_tensor.shape == torch.Size([1, 1])
 
             output: Tuple[torch.Tensor, torch.Tensor] = lm(batch_size=1,
@@ -62,6 +64,6 @@ if __name__ == "__main__":
 
         for _ in range(30):
 
-            sequence: str = generate_random_sequence(lm)
+            sequence: str = generate_random_sequence(lm, "cuda:0")
 
             print(sequence)

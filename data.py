@@ -1,3 +1,4 @@
+import sys
 from typing import Iterable, List, Mapping, TextIO
 
 import torch
@@ -23,6 +24,7 @@ class TextSequence(Dataset):
             self.max_len: int = max_len + 2
 
         for line in TextSequence.read_lines(path=path, vocab=self.vocab):  # type: str
+#            print(f"Reading line...\t{line}", file=sys.stderr)
             for char in line:  # type: str
                 self.vocab += char
 
