@@ -3,7 +3,6 @@ from typing import Tuple
 import torch
 
 from lm import RNN_LM
-from train import train_lm
 
 
 def generate_random_sequence(lm: RNN_LM) -> str:
@@ -63,6 +62,6 @@ if __name__ == "__main__":
 
         for _ in range(30):
 
-            result: str = generate_random_sequence(lm)
+            sequence: str = generate_random_sequence(lm)
 
-            print(result)
+            print(sequence)
