@@ -28,14 +28,7 @@ class TextSequence(Dataset):
                 self.vocab += char
 
     def __getitem__(self, item: int) -> Mapping[str, torch.Tensor]:
-        int_list: List[int] = [self.vocab.start_of_sequence]
-        for char in self.sequence[item]:
-            int_list.append(self.vocab[char])
-        int_list.append(self.vocab.end_of_sequence)
-
-        while len(int_list) < self.max_len:
-            int_list.append(self.vocab.pad)
-
+        int_list: List[int] = TextSequence.string_to_ints(self.sequence[item], self.max_len, self.vocab)
         label: List[int] = int_list[1:] + [self.vocab.pad]
 
         return {"data": torch.tensor(int_list),
@@ -45,6 +38,18 @@ class TextSequence(Dataset):
         return len(self.sequence)
 
     @staticmethod
+    def string_to_ints(sequence: str, max_len: int, vocab: Vocab) -> List[int]:
+        int_list: List[int] = [vocab.start_of_sequence]
+        for char in sequence:
+            int_list.append(vocab[char])
+        int_list.append(vocab.end_of_sequence)
+
+        while len(int_list) < max_len:
+            int_list.append(vocab.pad)
+
+        return int_list
+
+    @staticmethod
     def read_lines(*, path: str, vocab: Vocab) -> Iterable[str]:
         with open(path, 'rt') as lines:  # type: TextIO[str]
             for line_number, line in enumerate(lines):  # type: Tuple[int, str]
@@ -52,3 +57,37 @@ class TextSequence(Dataset):
                     yield line.strip()
 
 
+class PigLatin(Dataset):
+
+    def __init__(self, corpus: List[str], max_len: int):
+        self.max_len = max_len
+        self.vocab: Vocab = Vocab()
+
+        for line in corpus:  # type: str
+            for char in line:  # type: str
+                self.vocab += char
+        self.vocab += "-"
+
+        self.corpus = corpus
+        self.vowels = "aeiouAEIOU"
+
+    def __getitem__(self, index: int):
+        int_list: List[int] = TextSequence.string_to_ints(self.corpus[index], self.max_len, self.vocab)
+        label: List[int] = TextSequence.string_to_ints(PigLatin.modify(self.corpus[index], self.vowels),
+                                                       self.max_len, self.vocab)
+
+        return {"string": self.corpus[index],
+                "data": torch.tensor(int_list),
+                "labels": torch.tensor(label)}
+
+    def __len__(self):
+        return len(self.corpus)
+
+    @staticmethod
+    def modify(word: str, vowels: Iterable[str]) -> str:
+        positions: List[int] = [word.find(vowel) for vowel in vowels]
+        positions: List[int] = [position for position in positions if position >= 0]
+        start = min(positions, default=0)
+        prefix = word[0:start]
+        suffix = word[start:]
+        return f"{suffix}-{prefix}ay"
