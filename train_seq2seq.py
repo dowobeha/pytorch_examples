@@ -81,6 +81,8 @@ def train_lm(*, path: str,
             print(f"Epoch {str(epoch).zfill(len(str(num_epochs)))}\tloss {total_loss_across_batches}")
             sys.stdout.flush()
 
+    return seq2seq
+
 
 if __name__ == "__main__":
 
