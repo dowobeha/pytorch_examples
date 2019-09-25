@@ -164,7 +164,7 @@ if __name__ == "__main__":
                       decoder_num_layers=1,
                       attention_hidden_size=128,
                       batch_size=4000,
-                      num_epochs=400,
+                      num_epochs=200,
                       learning_rate=0.001,
                       device_name="cuda:0" if torch.cuda.is_available() else "cpu",
                       save_encoder=sys.argv[2],

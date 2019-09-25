@@ -82,13 +82,14 @@ class PigLatin(Dataset):
         label: List[int] = TextSequence.string_to_ints(label_text, self.max_len, self.vocab)
         # print(str(len(label)) + "\t" + str(PigLatin.modify(self.corpus[index], self.vowels)))
 
-        label: List[int] = ([self.vocab["y"]] * (self.max_len-1)) + [self.vocab.end_of_sequence]
+        #label: List[int] = ([self.vocab["y"]] * (self.max_len-1)) + [self.vocab.end_of_sequence]
 
         # print(f"{self.corpus[index]}\t{label_text}\t{self.max_len}")
 
         return {"string": self.corpus[index],
                 "data": torch.tensor(int_list),
-                "labels": torch.tensor(label),
+                "labels": torch.tensor(int_list),
+                #"labels": torch.tensor(label),
                 #"labels": torch.tensor([self.vocab["y"] * self.max_len]),
                 "start-of-sequence": torch.tensor([self.vocab.start_of_sequence])}
 
