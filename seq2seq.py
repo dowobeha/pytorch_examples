@@ -304,7 +304,8 @@ class DecoderWithAttention(nn.Module):
         verify_shape(tensor=decoder_output, expected=[batch_size, 1, len(self.vocab)])
         verify_shape(tensor=decoder_hidden_state, expected=[batch_size, 1, self.hidden_size])
 
-        return softmax(input=decoder_output, dim=2), decoder_hidden_state
+        #return softmax(input=decoder_output, dim=2), decoder_hidden_state
+        return decoder_output, decoder_hidden_state
         # verify_shape(tensor=decoded_token_ids, expected=[batch_size])
 
         # previous_decoder_output: torch.LongTensor = decoder_output.topk(k=1).indices.squeeze(dim=2).squeeze(dim=1)

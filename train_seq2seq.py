@@ -3,7 +3,7 @@ import time
 from typing import List, Tuple
 
 import torch
-from torch.nn.functional import cross_entropy
+from torch.nn.functional import cross_entropy, softmax
 from torch.optim import SGD
 from torch.utils.data import DataLoader
 
@@ -104,7 +104,7 @@ def train_seq2seq(*, path: str,
                 verify_shape(tensor=decoder_raw_output, expected=[actual_batch_size, 1, len(decoder.vocab)])
                 verify_shape(tensor=decoder_hidden_state, expected=[actual_batch_size, 1, decoder.hidden_size])
 
-                decoder_previous_output: torch.LongTensor = decoder_raw_output.squeeze(dim=1).topk(k=1).indices.squeeze(dim=1)
+                decoder_previous_output: torch.LongTensor = softmax(decoder_raw_output, dim=2).squeeze(dim=1).topk(k=1).indices.squeeze(dim=1)
                 verify_shape(tensor=decoder_previous_output, expected=[actual_batch_size])
 
                 decoder_output_list.append(decoder_raw_output.squeeze(dim=1))
