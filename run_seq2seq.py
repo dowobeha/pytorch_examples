@@ -34,7 +34,7 @@ def run_model(*, seq2seq: EncoderDecoderWithAttention, path: str, batch_size: in
             seq2seq_output: torch.Tensor = seq2seq(batch_size=actual_batch_size,
                                                    input_seq_len=words.max_len,
                                                    output_seq_len=words.max_len,
-                                                   input_tensor=examples)
+                                                   input_tensor=examples, device=device)
             verify_shape(tensor=seq2seq_output, expected=[actual_batch_size, words.max_len, len(seq2seq.vocab)])
 
             # for index in range(actual_batch_size):

@@ -230,9 +230,10 @@ class EncoderDecoderWithAttention(nn.Module):
                 batch_size: int,
                 input_seq_len: int,
                 input_tensor: torch.Tensor,
-                output_seq_len: int) -> torch.Tensor:
+                output_seq_len: int,
+                device: torch.device) -> torch.Tensor:
 
-        result: torch.Tensor = torch.zeros(output_seq_len, batch_size, len(self.vocab))
+        result: torch.Tensor = torch.zeros(output_seq_len, batch_size, len(self.vocab), device=device)
 
         verify_shape(tensor=input_tensor, expected=[batch_size, input_seq_len])
 
@@ -244,9 +245,9 @@ class EncoderDecoderWithAttention(nn.Module):
                                                     seq_len=input_seq_len)
         verify_shape(tensor=encoder_states, expected=[batch_size, input_seq_len, 2 * self.encoder.hidden_size])
 
-        decoder_hidden_state: torch.Tensor = torch.zeros(batch_size, 1, self.decoder.hidden_size)
+        decoder_hidden_state: torch.Tensor = torch.zeros(batch_size, 1, self.decoder.hidden_size, device=device)
         decoded_token_ids: torch.LongTensor = torch.tensor([self.vocab.start_of_sequence] * batch_size,
-                                                           dtype=torch.long)
+                                                           dtype=torch.long, device=device)
 
         for t in range(output_seq_len):
 
