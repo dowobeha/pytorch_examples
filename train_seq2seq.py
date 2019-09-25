@@ -4,7 +4,7 @@ import time
 
 import torch
 from torch.nn.functional import cross_entropy
-from torch.optim import Adam
+from torch.optim import SGD
 from torch.utils.data import DataLoader
 
 from data import PigLatin
@@ -61,8 +61,8 @@ def train_seq2seq(*, path: str,
     encoder.train()
     decoder.train()
 
-    optimize_encoder: Adam = Adam(encoder.parameters(), lr=learning_rate)
-    optimize_decoder: Adam = Adam(decoder.parameters(), lr=learning_rate)
+    optimize_encoder: SGD = SGD(encoder.parameters(), lr=learning_rate)
+    optimize_decoder: SGD = SGD(decoder.parameters(), lr=learning_rate)
 
     for epoch in range(num_epochs):
 
