@@ -271,61 +271,53 @@ class DecoderWithAttention(nn.Module):
                 input_seq_len: int,
                 previous_decoder_output: torch.LongTensor,
                 previous_decoder_hidden_state: torch.Tensor,
-                encoder_states: torch.Tensor,
-                output_seq_len: int) -> torch.Tensor:
-
-        # result: torch.Tensor = torch.zeros(output_seq_len, batch_size, len(self.vocab), device=device)
-        result: List[torch.Tensor] = list()
+                encoder_states: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
 
         verify_shape(tensor=encoder_states, expected=[batch_size, input_seq_len, 2 * self.encoder_hidden_size])
+        verify_shape(tensor=previous_decoder_output, expected=[batch_size])
 
-        # decoder_hidden_state: torch.Tensor = torch.zeros(batch_size, 1, self.decoder.hidden_size, device=device)
-        # decoded_token_ids: torch.LongTensor = torch.tensor([self.vocab.start_of_sequence] * batch_size,
-        #                                                    dtype=torch.long, device=device)
-        #print(f"{output_seq_len} {len(result)}")
-        for t in range(output_seq_len):
+        input_embeddings: torch.Tensor = self.embedding(previous_decoder_output)
+        verify_shape(tensor=input_embeddings, expected=[batch_size, self.embedding.embedding_dim])
 
-            verify_shape(tensor=previous_decoder_output, expected=[batch_size])
+        verify_shape(tensor=previous_decoder_hidden_state, expected=[batch_size, 1, self.hidden_size])
+        verify_shape(tensor=previous_decoder_output, expected=[batch_size])
 
-            input_embeddings: torch.Tensor = self.embedding(previous_decoder_output)
-            verify_shape(tensor=input_embeddings, expected=[batch_size, self.embedding.embedding_dim])
+        context: torch.Tensor = self.attention(batch_size=batch_size,
+                                               max_seq_len=input_seq_len,
+                                               previous_decoder_hidden_state=previous_decoder_hidden_state,
+                                               encoder_final_hidden_layers=encoder_states).unsqueeze(dim=1)
+        verify_shape(tensor=context, expected=[batch_size, 1, self.attention.context_size])
 
-            verify_shape(tensor=previous_decoder_hidden_state, expected=[batch_size, 1, self.hidden_size])
-            verify_shape(tensor=previous_decoder_output, expected=[batch_size])
+        decoded_token: torch.Tensor = self.embedding(previous_decoder_output).unsqueeze(dim=1)
+        verify_shape(tensor=decoded_token, expected=[batch_size, 1, self.embedding.embedding_dim])
 
-            context: torch.Tensor = self.attention(batch_size=batch_size,
-                                                   max_seq_len=input_seq_len,
-                                                   previous_decoder_hidden_state=previous_decoder_hidden_state,
-                                                   encoder_final_hidden_layers=encoder_states).unsqueeze(dim=1)
-            verify_shape(tensor=context, expected=[batch_size, 1, self.attention.context_size])
+        decoder_results: Tuple[torch.Tensor, torch.Tensor] = self.decoder(batch_size=batch_size,
+                                                                          input_tensor=decoded_token,
+                                                                          context_tensor=context,
+                                                                          hidden_tensor=previous_decoder_hidden_state)
 
-            decoded_token: torch.Tensor = self.embedding(previous_decoder_output).unsqueeze(dim=1)
-            verify_shape(tensor=decoded_token, expected=[batch_size, 1, self.embedding.embedding_dim])
+        # decoded_token_ids: torch.LongTensor = decoder_results[0]
+        decoder_output: torch.Tensor = decoder_results[0]
+        decoder_hidden_state: torch.Tensor = decoder_results[1]
 
-            decoder_results: Tuple[torch.Tensor, torch.Tensor] = self.decoder(batch_size=batch_size,
-                                                                              input_tensor=decoded_token,
-                                                                              context_tensor=context,
-                                                                              hidden_tensor=previous_decoder_hidden_state)
+        # verify_shape(tensor=result, expected=[output_seq_len, batch_size, len(self.vocab)])
+        verify_shape(tensor=decoder_output, expected=[batch_size, 1, len(self.vocab)])
+        verify_shape(tensor=decoder_hidden_state, expected=[batch_size, 1, self.hidden_size])
 
-            # decoded_token_ids: torch.LongTensor = decoder_results[0]
-            decoder_output: torch.Tensor = decoder_results[0]
-            previous_decoder_hidden_state: torch.Tensor = decoder_results[1]
+        return softmax(input=decoder_output, dim=2), decoder_hidden_state
+        # verify_shape(tensor=decoded_token_ids, expected=[batch_size])
 
-            # verify_shape(tensor=result, expected=[output_seq_len, batch_size, len(self.vocab)])
-            verify_shape(tensor=decoder_output, expected=[batch_size, 1, len(self.vocab)])
-            # verify_shape(tensor=decoded_token_ids, expected=[batch_size])
+        # previous_decoder_output: torch.LongTensor = decoder_output.topk(k=1).indices.squeeze(dim=2).squeeze(dim=1)
+        # verify_shape(tensor=previous_decoder_output, expected=[batch_size])
 
-            previous_decoder_output: torch.LongTensor = decoder_output.topk(k=1).indices.squeeze(dim=2).squeeze(dim=1)
-            verify_shape(tensor=previous_decoder_output, expected=[batch_size])
+        # output_tokens[t] = decoded_token_ids
+        # result[t] = decoder_output.squeeze(dim=1)
+        # result.append(decoder_output.squeeze(dim=1))
 
-            # output_tokens[t] = decoded_token_ids
-            # result[t] = decoder_output.squeeze(dim=1)
-            result.append(decoder_output.squeeze(dim=1))
-
-            #print(f"{t} {output_seq_len} {len(result)}")
+        #print(f"{t} {output_seq_len} {len(result)}")
 
         # return output_tokens.permute(1, 0)
-        permuted_result: torch.Tensor = torch.stack(result).permute(1, 0, 2)
-        verify_shape(tensor=permuted_result, expected=[batch_size, output_seq_len, len(self.vocab)])
-
-        return permuted_result
+        #permuted_result: torch.Tensor = decoder_output.permute(1, 0, 2)
+        #verify_shape(tensor=permuted_result, expected=[batch_size, 1, len(self.vocab)])
+        #
+        #return permuted_result

@@ -1,6 +1,6 @@
-
 import math
 import time
+from typing import List, Tuple
 
 import torch
 from torch.nn.functional import cross_entropy
@@ -75,7 +75,7 @@ def train_seq2seq(*, path: str,
 
             training_examples: torch.Tensor = batch["data"].to(device)
             training_labels: torch.LongTensor = batch["labels"].to(device)
-            decoder_start_of_sequence: torch.LongTensor = batch["start-of-sequence"].squeeze().to(device)
+            decoder_previous_output: torch.LongTensor = batch["start-of-sequence"].squeeze().to(device)
 
             # At the end of the data set, the actual batch size may be smaller than batch_size, and that's OK
             actual_batch_size: int = min(batch_size, training_examples.shape[0])
@@ -89,12 +89,27 @@ def train_seq2seq(*, path: str,
                                                    seq_len=words.max_len,
                                                    input_tensor=training_examples)
 
-            decoder_output: torch.Tensor = decoder(batch_size=actual_batch_size,
-                                                   input_seq_len=words.max_len,
-                                                   output_seq_len=words.max_len,
-                                                   previous_decoder_output=decoder_start_of_sequence,
-                                                   previous_decoder_hidden_state=decoder_hidden_state,
-                                                   encoder_states=encoder_states)
+            decoder_output_list: List[torch.Tensor] = list()
+            for _ in range(words.max_len):
+
+                decoder_results: Tuple[torch.Tensor, torch.Tensor] = decoder(batch_size=actual_batch_size,
+                                                                             input_seq_len=words.max_len,
+                                                                             previous_decoder_output=decoder_previous_output,
+                                                                             previous_decoder_hidden_state=decoder_hidden_state,
+                                                                             encoder_states=encoder_states)
+
+                decoder_raw_output: torch.Tensor = decoder_results[0]
+                decoder_hidden_state: torch.Tensor = decoder_results[1]
+
+                verify_shape(tensor=decoder_raw_output, expected=[actual_batch_size, 1, len(decoder.vocab)])
+                verify_shape(tensor=decoder_hidden_state, expected=[actual_batch_size, 1, decoder.hidden_size])
+
+                decoder_previous_output: torch.LongTensor = decoder_raw_output.squeeze(dim=1).topk(k=1).indices.squeeze(dim=1)
+                verify_shape(tensor=decoder_previous_output, expected=[actual_batch_size])
+
+                decoder_output_list.append(decoder_raw_output.squeeze(dim=1))
+
+            decoder_output: torch.Tensor = torch.stack(tensors=decoder_output_list, dim=0).permute(1, 0, 2)
 
             verify_shape(tensor=decoder_output, expected=[actual_batch_size, words.max_len, len(decoder.vocab)])
 
@@ -117,7 +132,7 @@ def train_seq2seq(*, path: str,
             optimize_encoder.step()
             optimize_decoder.step()
 
-        if epoch % 1 == 0:
+        if epoch % 10 == 0:
             print(f"Epoch {str(epoch).zfill(len(str(num_epochs)))}\t" +
                   f"loss {round(number=total_loss_across_batches, ndigits=3)}\t" +
                   f"{time_since(start)}")
