@@ -108,7 +108,8 @@ def train_seq2seq(*, path: str,
 
             loss = cross_entropy(input=decoder_output_reshaped,
                                  target=labels_reshaped,
-                                 ignore_index=words.vocab.pad)
+                                 ignore_index=words.vocab.pad,
+                                 reduction='mean')
 
             total_loss_across_batches += loss.item()
 
@@ -116,7 +117,7 @@ def train_seq2seq(*, path: str,
             optimize_encoder.step()
             optimize_decoder.step()
 
-        if epoch % 100 == 0:
+        if epoch % 1 == 0:
             print(f"Epoch {str(epoch).zfill(len(str(num_epochs)))}\t" +
                   f"loss {round(number=total_loss_across_batches, ndigits=3)}\t" +
                   f"{time_since(start)}")
