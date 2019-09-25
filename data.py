@@ -70,17 +70,24 @@ class PigLatin(Dataset):
         self.max_len = original_text.max_len + 3
         self.vocab: Vocab = original_text.vocab
         self.vocab += "-"
+        self.vocab += "a"
+        self.vocab += "y"
         self.corpus = original_text.sequence
         self.vowels = "aeiouAEIOU"
 
     def __getitem__(self, index: int):
         int_list: List[int] = TextSequence.string_to_ints(self.corpus[index], self.max_len, self.vocab)
-        label: List[int] = TextSequence.string_to_ints(PigLatin.modify(self.corpus[index], self.vowels),
-                                                       self.max_len, self.vocab)
+
+        label_text: str = PigLatin.modify(self.corpus[index], self.vowels)
+        label: List[int] = TextSequence.string_to_ints(label_text, self.max_len, self.vocab)
         # print(str(len(label)) + "\t" + str(PigLatin.modify(self.corpus[index], self.vowels)))
+
+        # print(f"{self.corpus[index]}\t{label_text}\t{self.max_len}")
+
         return {"string": self.corpus[index],
                 "data": torch.tensor(int_list),
-                "labels": torch.tensor(label)}
+                "labels": torch.tensor(label),
+                "start-of-sequence": torch.tensor([self.vocab.start_of_sequence])}
 
     def __len__(self):
         return len(self.corpus)
