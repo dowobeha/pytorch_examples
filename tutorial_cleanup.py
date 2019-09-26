@@ -2,7 +2,7 @@ import math
 import random
 import re
 import time
-from typing import Iterable, List, MutableMapping, Tuple
+from typing import Iterable, List, MutableMapping, Tuple, Union
 import unicodedata
 
 import matplotlib.pyplot as plt  # type: ignore
@@ -32,17 +32,25 @@ def time_since(*, since: float, percent: float) -> str:
 class Vocab:
 
     pad: int = 0
-    start_of_sequence: int = 1
-    end_of_sequence: int = 2
+    oov: int = 1
+    start_of_sequence: int = 2
+    end_of_sequence: int = 3
 
     def __init__(self, name: str):
         self.name: str = name
         self.word2index: MutableMapping[str, int] = {}
         self.word2count: MutableMapping[str, int] = {}
         self.index2word: MutableMapping[int, str] = {Vocab.pad: "<pad/>",
+                                                     Vocab.oov: "<oov/>",
                                                      Vocab.start_of_sequence: "<s>",
                                                      Vocab.end_of_sequence: "</s>"}
         self.n_words: int = len(self.index2word)
+
+    def __getitem__(self, item: str) -> int:
+        if item in self.word2index:
+            return self.word2index[item]
+        else:
+            return Vocab.oov
 
     def add_sentence(self, sentence: str) -> None:
         for word in sentence.split(' '):  # type: str
@@ -58,7 +66,7 @@ class Vocab:
             self.word2count[word] += 1
 
     def indexes_from_sentence(self, sentence: str) -> List[int]:
-        return [self.word2index[word] for word in sentence.split(' ')]
+        return [self[word] for word in sentence.split(' ')]
 
     def tensor_from_sentence(self, sentence: str, device: torch.device) -> torch.Tensor:
         indexes: List[int] = self.indexes_from_sentence(sentence)
@@ -126,7 +134,7 @@ def read_data(lang1: str, lang2: str, reverse: bool = False) -> Data:
     print("Reading lines...")
 
     # Read the file and split into lines
-    lines: Iterable[str] = open('data/%s-%s.txt' % (lang1, lang2), encoding='utf-8').\
+    lines: Iterable[str] = open('data/%s-%s.tiny' % (lang1, lang2), encoding='utf-8').\
         read().strip().split('\n')
 
     # Split every line into pairs and normalize
@@ -523,8 +531,8 @@ def run_training():
                 decoder=attn_decoder1,
                 device=device,
                 max_length=max_length,
-                n_iters=10000,
-                print_every=5000,
+                n_iters=100,
+                print_every=1,
                 plot_every=100,
                 learning_rate=0.01,
                 teacher_forcing_ratio=teacher_forcing_ratio)
