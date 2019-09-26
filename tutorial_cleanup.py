@@ -11,7 +11,7 @@ import matplotlib.ticker as ticker
 import torch
 from torch.nn.functional import log_softmax, relu, softmax
 import torch.nn as nn
-import torch.optim as optim
+from torch.optim import SGD
 from torch.optim.optimizer import Optimizer
 
 
@@ -82,6 +82,9 @@ class ParallelSentence:
         target_tensor: torch.Tensor = target_vocab.tensor_from_sentence(sentence=self.target, device=device)
         return ParallelTensor(source_tensor, target_tensor)
 
+    def __str__(self) -> str:
+        return f"{self.source}\t{self.target}"
+
 
 class Data:
     def __init__(self, source_vocab: Vocab, target_vocab: Vocab, pairs: List[ParallelSentence]):
@@ -97,6 +100,9 @@ class Data:
 
     def __getitem__(self, index: int) -> ParallelSentence:
         return self.pairs[index]
+
+    def __repr__(self) -> str:
+        return f"Data({self.source_vocab.name}-{self.target_vocab.name} with {len(self.pairs)} parallel sentences)"
 
 
 # Turn a Unicode string to plain ASCII, thanks to
@@ -295,7 +301,7 @@ def train(*,
     return loss.item() / target_length
 
 
-def showPlot(points) -> None:
+def show_plot(points: List[float]) -> None:
     plt.figure()
     fig, ax = plt.subplots()
     # this locator puts ticks at regular intervals
@@ -322,8 +328,8 @@ def train_iters(*,
     print_loss_total: float = 0  # Reset every print_every
     plot_loss_total: float = 0  # Reset every plot_every
 
-    encoder_optimizer: optim.SGD = optim.SGD(encoder.parameters(), lr=learning_rate)
-    decoder_optimizer: optim.SGD = optim.SGD(decoder.parameters(), lr=learning_rate)
+    encoder_optimizer: Optimizer = SGD(encoder.parameters(), lr=learning_rate)
+    decoder_optimizer: Optimizer = SGD(decoder.parameters(), lr=learning_rate)
 
     training_pairs: List[ParallelTensor] = [random.choice(data.pairs).tensors(source_vocab=data.source_vocab,
                                                                               target_vocab=data.target_vocab,
@@ -363,7 +369,7 @@ def train_iters(*,
             plot_losses.append(plot_loss_avg)
             plot_loss_total: float = 0
 
-    showPlot(plot_losses)
+    show_plot(points=plot_losses)
 
 
 def evaluate(*,
@@ -438,7 +444,7 @@ def evaluate_randomly(*,
         print('')
 
 
-def showAttention(input_sentence, output_words, attentions):
+def show_attention(*, input_sentence, output_words, attentions):
     # Set up figure with colorbar
     fig = plt.figure()
     ax = fig.add_subplot(111)
@@ -475,7 +481,7 @@ def evaluate_and_show_attention(*,
                                         max_length=max_length)
     print('input =', sentence)
     print('output =', ' '.join(output_words))
-    showAttention(sentence, output_words, attentions)
+    show_attention(input_sentence=sentence, output_words=output_words, attentions=attentions)
 
 
 def run_training():
@@ -533,17 +539,20 @@ def run_training():
                                         device=device,
                                         max_length=max_length)
 
-    if False:
+    plt.matshow(attentions.numpy())
 
-        plt.matshow(attentions.numpy())
+    for sentence in ["elle a cinq ans de moins que moi .",
+                     "elle est trop petit .",
+                     "je ne crains pas de mourir .",
+                     "c est un jeune directeur plein de talent ."]:
 
-        evaluateAndShowAttention("elle a cinq ans de moins que moi .", encoder1, attn_decoder1)
-
-        evaluateAndShowAttention("elle est trop petit .", encoder1, attn_decoder1)
-
-        evaluateAndShowAttention("je ne crains pas de mourir .", encoder1, attn_decoder1)
-
-        evaluateAndShowAttention("c est un jeune directeur plein de talent .", encoder1, attn_decoder1)
+        evaluate_and_show_attention(sentence=sentence,
+                                    encoder=encoder1,
+                                    decoder=attn_decoder1,
+                                    source_vocab=data.source_vocab,
+                                    target_vocab=data.target_vocab,
+                                    device=device,
+                                    max_length=max_length)
 
 
 if __name__ == "__main__":
