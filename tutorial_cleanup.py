@@ -5,8 +5,8 @@ import time
 from typing import Iterable, List, MutableMapping, Tuple
 import unicodedata
 
-import matplotlib.pyplot as plt
-import matplotlib.ticker as ticker
+import matplotlib.pyplot as plt  # type: ignore
+import matplotlib.ticker as ticker  # type: ignore
 
 import torch
 from torch.nn.functional import log_softmax, relu, softmax
@@ -190,7 +190,7 @@ class EncoderRNN(nn.Module):
         self.embedding: nn.Embedding = nn.Embedding(input_size, hidden_size)
         self.gru: nn.GRU = nn.GRU(hidden_size, hidden_size)
 
-    def forward(self, input_tensor: torch.Tensor, hidden: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+    def forward(self, input_tensor: torch.Tensor, hidden: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:  # type: ignore[override]
         embedded: torch.Tensor = self.embedding(input_tensor).view(1, 1, -1)
         output: torch.Tensor = embedded
         output, hidden = self.gru(output, hidden)
@@ -215,7 +215,7 @@ class AttnDecoderRNN(nn.Module):
         self.gru = nn.GRU(self.hidden_size, self.hidden_size)
         self.out = nn.Linear(self.hidden_size, self.output_size)
 
-    def forward(self, input_tensor: torch.Tensor, hidden: torch.Tensor, encoder_outputs):
+    def forward(self, input_tensor: torch.Tensor, hidden: torch.Tensor, encoder_outputs):  # type: ignore[override]
         embedded = self.embedding(input_tensor).view(1, 1, -1)
         embedded = self.dropout(embedded)
 
@@ -360,14 +360,14 @@ def train_iters(*,
 
         if iteration % print_every == 0:
             print_loss_avg: float = print_loss_total / print_every
-            print_loss_total: float = 0
+            print_loss_total = 0
             print('%s (%d %d%%) %.4f' % (time_since(since=start, percent=iteration/n_iters),
                                          iteration, iteration / n_iters * 100, print_loss_avg))
 
         if iteration % plot_every == 0:
             plot_loss_avg: float = plot_loss_total / plot_every
             plot_losses.append(plot_loss_avg)
-            plot_loss_total: float = 0
+            plot_loss_total = 0
 
     show_plot(points=plot_losses)
 
@@ -401,7 +401,7 @@ def evaluate(*,
         decoder_attentions: torch.Tensor = torch.zeros(max_length, max_length)
 
         di: int = 0
-        for di in range(max_length):  # type: int
+        for di in range(max_length):
             decoder_output, decoder_hidden, decoder_attention = decoder(
                 decoder_input, decoder_hidden, encoder_outputs)
             decoder_attentions[di] = decoder_attention.data
