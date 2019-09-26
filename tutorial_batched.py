@@ -17,16 +17,16 @@ from torch import optim
 import torch.nn.functional as F
 from torch.nn.utils.rnn import pad_packed_sequence, pack_padded_sequence
 
-import matplotlib.pyplot as plt
-import matplotlib.ticker as ticker
+# import matplotlib.pyplot as plt
+# import matplotlib.ticker as ticker
 # matplotlib.use('Agg')
 import numpy as np
 
 import io
-import torchvision
-from PIL import Image
-import visdom
-vis = visdom.Visdom()
+# import torchvision
+# from PIL import Image
+# import visdom
+# vis = visdom.Visdom()
 
 USE_CUDA = True
 
@@ -52,18 +52,6 @@ plot_every = 20
 print_every = 100
 evaluate_every = 1000
 
-# Initialize models
-encoder = EncoderRNN(input_lang.n_words, hidden_size, n_layers, dropout=dropout)
-decoder = LuongAttnDecoderRNN(attn_model, hidden_size, output_lang.n_words, n_layers, dropout=dropout)
-
-# Initialize optimizers and criterion
-encoder_optimizer = optim.Adam(encoder.parameters(), lr=learning_rate)
-decoder_optimizer = optim.Adam(decoder.parameters(), lr=learning_rate * decoder_learning_ratio)
-
-# Move models to GPU
-if USE_CUDA:
-    encoder.cuda()
-    decoder.cuda()
 
 # Keep track of time elapsed and running averages
 start = time.time()
@@ -455,9 +443,56 @@ if USE_CUDA:
 
 loss = 0
 
+def sequence_mask(sequence_length, max_len=None):
+    if max_len is None:
+        max_len = sequence_length.data.max()
+    batch_size = sequence_length.size(0)
+    seq_range = torch.range(0, max_len - 1).long()
+    seq_range_expand = seq_range.unsqueeze(0).expand(batch_size, max_len)
+    seq_range_expand = Variable(seq_range_expand)
+    if sequence_length.is_cuda:
+        seq_range_expand = seq_range_expand.cuda()
+    seq_length_expand = (sequence_length.unsqueeze(1)
+                         .expand_as(seq_range_expand))
+    return seq_range_expand < seq_length_expand
+
+
+def masked_cross_entropy(logits, target, length):
+    length = Variable(torch.LongTensor(length)).cuda()
+
+    """
+    Args:
+        logits: A Variable containing a FloatTensor of size
+            (batch, max_len, num_classes) which contains the
+            unnormalized probability for each class.
+        target: A Variable containing a LongTensor of size
+            (batch, max_len) which contains the index of the true
+            class for each corresponding step.
+        length: A Variable containing a LongTensor of size (batch,)
+            which contains the length of each data in a batch.
+    Returns:
+        loss: An average loss value masked by the length.
+    """
+
+    # logits_flat: (batch * max_len, num_classes)
+    logits_flat = logits.view(-1, logits.size(-1))
+    # log_probs_flat: (batch * max_len, num_classes)
+    log_probs_flat = F.log_softmax(logits_flat)
+    # target_flat: (batch * max_len, 1)
+    target_flat = target.view(-1, 1)
+    # losses_flat: (batch * max_len, 1)
+    losses_flat = -torch.gather(log_probs_flat, dim=1, index=target_flat)
+    # losses: (batch, max_len)
+    losses = losses_flat.view(*target.size())
+    # mask: (batch, max_len)
+    mask = sequence_mask(sequence_length=length, max_len=target.size(1))
+    losses = losses * mask.float()
+    loss = losses.sum() / length.float().sum()
+    return loss
+
 # import masked_cross_entropy
-import importlib
-importlib.reload(masked_cross_entropy)
+#import importlib
+#importlib.reload(masked_cross_entropy)
 
 # Run through decoder one time step at a time
 for t in range(max_length - 1):
@@ -669,47 +704,12 @@ def evaluate_randomly():
 
     output_words, attentions = evaluate(pair[0])
     output_sentence = ' '.join(output_words)
-    show_attention(pair[0], output_words, attentions)
 
     print('>', pair[0])
     print('=', pair[1])
     print('<', output_sentence)
     print('')
 
-def show_plot_visdom():
-    buf = io.BytesIO()
-    plt.savefig(buf)
-    buf.seek(0)
-    attn_win = 'attention (%s)' % hostname
-    vis.image(torchvision.transforms.ToTensor()(Image.open(buf)), win=attn_win, opts={'title': attn_win})
-
-def show_attention(input_sentence, output_words, attentions):
-    # Set up figure with colorbar
-    fig = plt.figure()
-    ax = fig.add_subplot(111)
-    cax = ax.matshow(attentions.numpy(), cmap='bone')
-    fig.colorbar(cax)
-
-    # Set up axes
-    ax.set_xticklabels([''] + input_sentence.split(' ') + ['<EOS>'], rotation=90)
-    ax.set_yticklabels([''] + output_words)
-
-    # Show label at every tick
-    ax.xaxis.set_major_locator(ticker.MultipleLocator(1))
-    ax.yaxis.set_major_locator(ticker.MultipleLocator(1))
-
-    show_plot_visdom()
-    plt.show()
-    plt.close()
-
-def evaluate_and_show_attention(input_sentence):
-    output_words, attentions = evaluate(input_sentence)
-    print('input =', input_sentence)
-    print('output =', ' '.join(output_words))
-    show_attention(input_sentence, output_words, attentions)
-    win = 'evaluted (%s)' % hostname
-    text = '<p>&gt; %s</p><p>= %s</p><p>&lt; %s</p>' % (input_sentence, target_sentence, output_sentence)
-    vis.text(text, win=win, opts={'title': win})
 
 
 # Begin!
@@ -717,6 +717,20 @@ ecs = []
 dcs = []
 eca = 0
 dca = 0
+
+
+# Initialize models
+encoder = EncoderRNN(input_lang.n_words, hidden_size, n_layers, dropout=dropout)
+decoder = LuongAttnDecoderRNN(attn_model, hidden_size, output_lang.n_words, n_layers, dropout=dropout)
+
+# Initialize optimizers and criterion
+encoder_optimizer = optim.Adam(encoder.parameters(), lr=learning_rate)
+decoder_optimizer = optim.Adam(decoder.parameters(), lr=learning_rate * decoder_learning_ratio)
+
+# Move models to GPU
+if USE_CUDA:
+    encoder.cuda()
+    decoder.cuda()
 
 while epoch < n_epochs:
     epoch += 1
@@ -756,9 +770,11 @@ while epoch < n_epochs:
         # TODO: Running average helper
         ecs.append(eca / plot_every)
         dcs.append(dca / plot_every)
-        ecs_win = 'encoder grad (%s)' % hostname
-        dcs_win = 'decoder grad (%s)' % hostname
-        vis.line(np.array(ecs), win=ecs_win, opts={'title': ecs_win})
-        vis.line(np.array(dcs), win=dcs_win, opts={'title': dcs_win})
+        # ecs_win = 'encoder grad (%s)' % hostname
+        # dcs_win = 'decoder grad (%s)' % hostname
+        # vis.line(np.array(ecs), win=ecs_win, opts={'title': ecs_win})
+        # vis.line(np.array(dcs), win=dcs_win, opts={'title': dcs_win})
         eca = 0
         dca = 0
+
+
