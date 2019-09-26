@@ -2,60 +2,53 @@ import math
 import random
 import re
 import time
+from typing import Iterable, List, MutableMapping, Tuple
 import unicodedata
 
 import matplotlib.pyplot as plt
 import matplotlib.ticker as ticker
 
 import torch
-import torch.nn.functional as F
+from torch.nn.functional import log_softmax, relu, softmax
 import torch.nn as nn
 import torch.optim as optim
+from torch.optim.optimizer import Optimizer
 
 
-# Global constants
-
-MAX_LENGTH = 10
-SOS_token = 0
-EOS_token = 1
-teacher_forcing_ratio = 0.5
-hidden_size = 256
-eng_prefixes = (
-    "i am ", "i m ",
-    "he is", "he s ",
-    "she is", "she s ",
-    "you are", "you re ",
-    "we are", "we re ",
-    "they are", "they re "
-)
+def as_minutes(*, seconds: float) -> str:
+    minutes: int = math.floor(seconds / 60)
+    seconds -= minutes * 60
+    return '%dm %ds' % (minutes, seconds)
 
 
-def asMinutes(s):
-    m = math.floor(s / 60)
-    s -= m * 60
-    return '%dm %ds' % (m, s)
-
-
-def timeSince(since, percent):
-    now = time.time()
+def time_since(*, since: float, percent: float) -> str:
+    now: float = time.time()
     s = now - since
-    es = s / (percent)
+    es = s / percent
     rs = es - s
-    return '%s (- %s)' % (asMinutes(s), asMinutes(rs))
+    return '%s (- %s)' % (as_minutes(seconds=s), as_minutes(seconds=rs))
 
-class Lang:
-    def __init__(self, name):
-        self.name = name
-        self.word2index = {}
-        self.word2count = {}
-        self.index2word = {0: "SOS", 1: "EOS"}
-        self.n_words = 2  # Count SOS and EOS
 
-    def addSentence(self, sentence):
-        for word in sentence.split(' '):
-            self.addWord(word)
+class Vocab:
 
-    def addWord(self, word):
+    pad: int = 0
+    start_of_sequence: int = 1
+    end_of_sequence: int = 2
+
+    def __init__(self, name: str):
+        self.name: str = name
+        self.word2index: MutableMapping[str, int] = {}
+        self.word2count: MutableMapping[str, int] = {}
+        self.index2word: MutableMapping[int, str] = {Vocab.pad: "<pad/>",
+                                                     Vocab.start_of_sequence: "<s>",
+                                                     Vocab.end_of_sequence: "</s>"}
+        self.n_words: int = len(self.index2word)
+
+    def add_sentence(self, sentence: str) -> None:
+        for word in sentence.split(' '):  # type: str
+            self.add_word(word)
+
+    def add_word(self, word: str) -> None:
         if word not in self.word2index:
             self.word2index[word] = self.n_words
             self.word2count[word] = 1
@@ -64,101 +57,145 @@ class Lang:
         else:
             self.word2count[word] += 1
 
+    def indexes_from_sentence(self, sentence: str) -> List[int]:
+        return [self.word2index[word] for word in sentence.split(' ')]
+
+    def tensor_from_sentence(self, sentence: str, device: torch.device) -> torch.Tensor:
+        indexes: List[int] = self.indexes_from_sentence(sentence)
+        indexes.append(Vocab.end_of_sequence)
+        return torch.tensor(indexes, dtype=torch.long, device=device).view(-1, 1)
+
+
+class ParallelTensor:
+    def __init__(self, source_tensor: torch.Tensor, target_tensor: torch.Tensor):
+        self.source: torch.Tensor = source_tensor
+        self.target: torch.Tensor = target_tensor
+
+
+class ParallelSentence:
+    def __init__(self, source_sentence: str, target_sentence: str):
+        self.source: str = source_sentence
+        self.target: str = target_sentence
+
+    def tensors(self, *, source_vocab: Vocab, target_vocab: Vocab, device: torch.device) -> ParallelTensor:
+        source_tensor: torch.Tensor = source_vocab.tensor_from_sentence(sentence=self.source, device=device)
+        target_tensor: torch.Tensor = target_vocab.tensor_from_sentence(sentence=self.target, device=device)
+        return ParallelTensor(source_tensor, target_tensor)
+
+
+class Data:
+    def __init__(self, source_vocab: Vocab, target_vocab: Vocab, pairs: List[ParallelSentence]):
+        self.source_vocab: Vocab = source_vocab
+        self.target_vocab: Vocab = target_vocab
+        self.pairs: List[ParallelSentence] = pairs
+
+    def __len__(self):
+        return len(self.pairs)
+
+    def __iter__(self):
+        return iter(self.pairs)
+
+    def __getitem__(self, index: int) -> ParallelSentence:
+        return self.pairs[index]
+
 
 # Turn a Unicode string to plain ASCII, thanks to
 # https://stackoverflow.com/a/518232/2809427
-def unicodeToAscii(s):
+def unicode_to_ascii(s: str) -> str:
     return ''.join(
         c for c in unicodedata.normalize('NFD', s)
         if unicodedata.category(c) != 'Mn'
     )
 
+
 # Lowercase, trim, and remove non-letter characters
-
-
-def normalizeString(s):
-    s = unicodeToAscii(s.lower().strip())
+def normalize_string(s: str) -> str:
+    s = unicode_to_ascii(s.lower().strip())
     s = re.sub(r"([.!?])", r" \1", s)
     s = re.sub(r"[^a-zA-Z.!?]+", r" ", s)
     return s
 
 
-def readLangs(lang1, lang2, reverse=False):
+def read_data(lang1: str, lang2: str, reverse: bool = False) -> Data:
     print("Reading lines...")
 
     # Read the file and split into lines
-    lines = open('data/%s-%s.txt' % (lang1, lang2), encoding='utf-8').\
+    lines: Iterable[str] = open('data/%s-%s.txt' % (lang1, lang2), encoding='utf-8').\
         read().strip().split('\n')
 
     # Split every line into pairs and normalize
-    pairs = [[normalizeString(s) for s in l.split('\t')] for l in lines]
+    parallel_data: List[List[str]] = [[normalize_string(s) for s in l.split('\t')] for l in lines]
 
     # Reverse pairs, make Lang instances
     if reverse:
-        pairs = [list(reversed(p)) for p in pairs]
-        input_lang = Lang(lang2)
-        output_lang = Lang(lang1)
+        parallel_data = [list(reversed(p)) for p in parallel_data]
+        input_vocab = Vocab(lang2)
+        output_vocab = Vocab(lang1)
     else:
-        input_lang = Lang(lang1)
-        output_lang = Lang(lang2)
+        input_vocab = Vocab(lang1)
+        output_vocab = Vocab(lang2)
 
-    return input_lang, output_lang, pairs
+    pairs: List[ParallelSentence] = [ParallelSentence(source_sentence=parallel_line[0],
+                                                      target_sentence=parallel_line[1])
+                                     for parallel_line in parallel_data]
 
-
-
-
-def filterPair(p):
-    return len(p[0].split(' ')) < MAX_LENGTH and \
-        len(p[1].split(' ')) < MAX_LENGTH and \
-        p[1].startswith(eng_prefixes)
+    return Data(source_vocab=input_vocab, target_vocab=output_vocab, pairs=pairs)
 
 
-def filterPairs(pairs):
-    return [pair for pair in pairs if filterPair(pair)]
+def filter_pair(*, pair: ParallelSentence, max_length: int, prefixes: Tuple[str, ...]) -> bool:
+    return len(pair.source.split(' ')) < max_length and \
+        len(pair.target.split(' ')) < max_length and \
+        pair.target.startswith(prefixes)
 
 
-def prepareData(lang1, lang2, reverse=False):
-    input_lang, output_lang, pairs = readLangs(lang1, lang2, reverse)
-    print("Read %s sentence pairs" % len(pairs))
-    pairs = filterPairs(pairs)
+def filter_pairs(*,
+                 pairs: List[ParallelSentence],
+                 max_length: int,
+                 prefixes: Tuple[str, ...]) -> List[ParallelSentence]:
+
+    return [pair for pair in pairs if filter_pair(pair=pair, max_length=max_length, prefixes=prefixes)]
+
+
+def prepare_data(*,
+                 lang1: str,
+                 lang2: str,
+                 max_length: int,
+                 prefixes: Tuple[str, ...],
+                 reverse: bool = False) -> Data:
+
+    data: Data = read_data(lang1, lang2, reverse)
+    print("Read %s sentence pairs" % len(data))
+    pairs: List[ParallelSentence] = filter_pairs(pairs=data.pairs, max_length=max_length, prefixes=prefixes)
     print("Trimmed to %s sentence pairs" % len(pairs))
     print("Counting words...")
-    for pair in pairs:
-        input_lang.addSentence(pair[0])
-        output_lang.addSentence(pair[1])
+    for pair in data:
+        data.source_vocab.add_sentence(pair.source)
+        data.target_vocab.add_sentence(pair.target)
     print("Counted words:")
-    print(input_lang.name, input_lang.n_words)
-    print(output_lang.name, output_lang.n_words)
-    return input_lang, output_lang, pairs
-
-
-input_lang, output_lang, pairs = prepareData('eng', 'fra', True)
-print(len(pairs))
-print(random.choice(pairs))
-
-device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+    print(data.source_vocab.name, data.source_vocab.n_words)
+    print(data.target_vocab.name, data.target_vocab.n_words)
+    return Data(source_vocab=data.source_vocab, target_vocab=data.target_vocab, pairs=pairs)
 
 
 class EncoderRNN(nn.Module):
-    def __init__(self, input_size, hidden_size):
+    def __init__(self, *, input_size: int, hidden_size: int):
         super(EncoderRNN, self).__init__()
-        self.hidden_size = hidden_size
+        self.hidden_size: int = hidden_size
+        self.embedding: nn.Embedding = nn.Embedding(input_size, hidden_size)
+        self.gru: nn.GRU = nn.GRU(hidden_size, hidden_size)
 
-        self.embedding = nn.Embedding(input_size, hidden_size)
-        self.gru = nn.GRU(hidden_size, hidden_size)
-
-    def forward(self, input, hidden):
-        embedded = self.embedding(input).view(1, 1, -1)
-        output = embedded
+    def forward(self, input_tensor: torch.Tensor, hidden: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        embedded: torch.Tensor = self.embedding(input_tensor).view(1, 1, -1)
+        output: torch.Tensor = embedded
         output, hidden = self.gru(output, hidden)
         return output, hidden
 
-    def initHidden(self):
+    def init_hidden(self, *, device: torch.device) -> torch.Tensor:
         return torch.zeros(1, 1, self.hidden_size, device=device)
 
 
 class AttnDecoderRNN(nn.Module):
-    def __init__(self, hidden_size, output_size, dropout_p=0.1, max_length=MAX_LENGTH):
+    def __init__(self, *, hidden_size, output_size, dropout_p=0.1, max_length):
         super(AttnDecoderRNN, self).__init__()
         self.hidden_size = hidden_size
         self.output_size = output_size
@@ -172,11 +209,11 @@ class AttnDecoderRNN(nn.Module):
         self.gru = nn.GRU(self.hidden_size, self.hidden_size)
         self.out = nn.Linear(self.hidden_size, self.output_size)
 
-    def forward(self, input, hidden, encoder_outputs):
-        embedded = self.embedding(input).view(1, 1, -1)
+    def forward(self, input_tensor: torch.Tensor, hidden: torch.Tensor, encoder_outputs):
+        embedded = self.embedding(input_tensor).view(1, 1, -1)
         embedded = self.dropout(embedded)
 
-        attn_weights = F.softmax(
+        attn_weights = softmax(
             self.attn(torch.cat((embedded[0], hidden[0]), 1)), dim=1)
         attn_applied = torch.bmm(attn_weights.unsqueeze(0),
                                  encoder_outputs.unsqueeze(0))
@@ -184,35 +221,29 @@ class AttnDecoderRNN(nn.Module):
         output = torch.cat((embedded[0], attn_applied[0]), 1)
         output = self.attn_combine(output).unsqueeze(0)
 
-        output = F.relu(output)
+        output = relu(output)
         output, hidden = self.gru(output, hidden)
 
-        output = F.log_softmax(self.out(output[0]), dim=1)
+        output = log_softmax(self.out(output[0]), dim=1)
         return output, hidden, attn_weights
 
-    def initHidden(self):
+    def init_hidden(self, *, device):
         return torch.zeros(1, 1, self.hidden_size, device=device)
 
-def indexesFromSentence(lang, sentence):
-    return [lang.word2index[word] for word in sentence.split(' ')]
 
+def train(*,
+          input_tensor: torch.Tensor,
+          target_tensor: torch.Tensor,
+          encoder: EncoderRNN,
+          decoder: AttnDecoderRNN,
+          encoder_optimizer: Optimizer,
+          decoder_optimizer: Optimizer,
+          criterion: nn.Module,
+          device: torch.device,
+          max_length: int,
+          teacher_forcing_ratio: float) -> float:
 
-def tensorFromSentence(lang, sentence):
-    indexes = indexesFromSentence(lang, sentence)
-    indexes.append(EOS_token)
-    return torch.tensor(indexes, dtype=torch.long, device=device).view(-1, 1)
-
-
-def tensorsFromPair(pair):
-    input_tensor = tensorFromSentence(input_lang, pair[0])
-    target_tensor = tensorFromSentence(output_lang, pair[1])
-    return (input_tensor, target_tensor)
-
-
-
-
-def train(input_tensor, target_tensor, encoder, decoder, encoder_optimizer, decoder_optimizer, criterion, max_length=MAX_LENGTH):
-    encoder_hidden = encoder.initHidden()
+    encoder_hidden = encoder.init_hidden(device=device)
 
     encoder_optimizer.zero_grad()
     decoder_optimizer.zero_grad()
@@ -229,13 +260,14 @@ def train(input_tensor, target_tensor, encoder, decoder, encoder_optimizer, deco
             input_tensor[ei], encoder_hidden)
         encoder_outputs[ei] = encoder_output[0, 0]
 
-    decoder_input = torch.tensor([[SOS_token]], device=device)
+    decoder_input = torch.tensor([[Vocab.start_of_sequence]], device=device)
 
     decoder_hidden = encoder_hidden
 
     use_teacher_forcing = True if random.random() < teacher_forcing_ratio else False
 
     if use_teacher_forcing:
+
         # Teacher forcing: Feed the target as the next input
         for di in range(target_length):
             decoder_output, decoder_hidden, decoder_attention = decoder(
@@ -252,7 +284,7 @@ def train(input_tensor, target_tensor, encoder, decoder, encoder_optimizer, deco
             decoder_input = topi.squeeze().detach()  # detach from history as input
 
             loss += criterion(decoder_output, target_tensor[di])
-            if decoder_input.item() == EOS_token:
+            if decoder_input.item() == Vocab.end_of_sequence:
                 break
 
     loss.backward()
@@ -262,7 +294,8 @@ def train(input_tensor, target_tensor, encoder, decoder, encoder_optimizer, deco
 
     return loss.item() / target_length
 
-def showPlot(points):
+
+def showPlot(points) -> None:
     plt.figure()
     fig, ax = plt.subplots()
     # this locator puts ticks at regular intervals
@@ -271,85 +304,136 @@ def showPlot(points):
     plt.plot(points)
 
 
-def trainIters(encoder, decoder, n_iters, print_every=1000, plot_every=100, learning_rate=0.01):
-    start = time.time()
-    plot_losses = []
-    print_loss_total = 0  # Reset every print_every
-    plot_loss_total = 0  # Reset every plot_every
+def train_iters(*,
+                data: Data,
+                encoder: EncoderRNN,
+                decoder: AttnDecoderRNN,
+                device: torch.device,
+                max_length: int,
+                n_iters: int,
+                teacher_forcing_ratio: float,
+                print_every: int = 1000,
+                plot_every: int = 100,
+                learning_rate: float = 0.01
+                ) -> None:
 
-    encoder_optimizer = optim.SGD(encoder.parameters(), lr=learning_rate)
-    decoder_optimizer = optim.SGD(decoder.parameters(), lr=learning_rate)
-    training_pairs = [tensorsFromPair(random.choice(pairs))
-                      for i in range(n_iters)]
-    criterion = nn.NLLLoss()
+    start: float = time.time()
+    plot_losses: List[float] = []
+    print_loss_total: float = 0  # Reset every print_every
+    plot_loss_total: float = 0  # Reset every plot_every
 
-    for iter in range(1, n_iters + 1):
-        training_pair = training_pairs[iter - 1]
-        input_tensor = training_pair[0]
-        target_tensor = training_pair[1]
+    encoder_optimizer: optim.SGD = optim.SGD(encoder.parameters(), lr=learning_rate)
+    decoder_optimizer: optim.SGD = optim.SGD(decoder.parameters(), lr=learning_rate)
 
-        loss = train(input_tensor, target_tensor, encoder,
-                     decoder, encoder_optimizer, decoder_optimizer, criterion)
+    training_pairs: List[ParallelTensor] = [random.choice(data.pairs).tensors(source_vocab=data.source_vocab,
+                                                                              target_vocab=data.target_vocab,
+                                                                              device=device)
+                                            for _ in range(n_iters)]
+
+    criterion: nn.NLLLoss = nn.NLLLoss()
+
+    for iteration in range(1, n_iters + 1):  # type: int
+
+        training_pair: ParallelTensor = training_pairs[iteration - 1]
+        input_tensor: torch.Tensor = training_pair.source
+        target_tensor: torch.Tensor = training_pair.target
+
+        loss: float = train(input_tensor=input_tensor,
+                            target_tensor=target_tensor,
+                            encoder=encoder,
+                            decoder=decoder,
+                            encoder_optimizer=encoder_optimizer,
+                            decoder_optimizer=decoder_optimizer,
+                            criterion=criterion,
+                            device=device,
+                            max_length=max_length,
+                            teacher_forcing_ratio=teacher_forcing_ratio)
+
         print_loss_total += loss
         plot_loss_total += loss
 
-        if iter % print_every == 0:
-            print_loss_avg = print_loss_total / print_every
-            print_loss_total = 0
-            print('%s (%d %d%%) %.4f' % (timeSince(start, iter / n_iters),
-                                         iter, iter / n_iters * 100, print_loss_avg))
+        if iteration % print_every == 0:
+            print_loss_avg: float = print_loss_total / print_every
+            print_loss_total: float = 0
+            print('%s (%d %d%%) %.4f' % (time_since(since=start, percent=iteration/n_iters),
+                                         iteration, iteration / n_iters * 100, print_loss_avg))
 
-        if iter % plot_every == 0:
-            plot_loss_avg = plot_loss_total / plot_every
+        if iteration % plot_every == 0:
+            plot_loss_avg: float = plot_loss_total / plot_every
             plot_losses.append(plot_loss_avg)
-            plot_loss_total = 0
+            plot_loss_total: float = 0
 
     showPlot(plot_losses)
 
 
-def evaluate(encoder, decoder, sentence, max_length=MAX_LENGTH):
+def evaluate(*,
+             encoder: EncoderRNN,
+             decoder: AttnDecoderRNN,
+             sentence: str,
+             source_vocab: Vocab,
+             target_vocab: Vocab,
+             device: torch.device,
+             max_length: int):
+
     with torch.no_grad():
-        input_tensor = tensorFromSentence(input_lang, sentence)
-        input_length = input_tensor.size()[0]
-        encoder_hidden = encoder.initHidden()
+        input_tensor: torch.Tensor = source_vocab.tensor_from_sentence(sentence, device=device)
+        input_length: int = input_tensor.size()[0]
+        encoder_hidden: torch.Tensor = encoder.init_hidden(device=device)
 
-        encoder_outputs = torch.zeros(max_length, encoder.hidden_size, device=device)
+        encoder_outputs: torch.Tensor = torch.zeros(max_length, encoder.hidden_size, device=device)
 
-        for ei in range(input_length):
+        for ei in range(input_length):  # type: int
             encoder_output, encoder_hidden = encoder(input_tensor[ei],
                                                      encoder_hidden)
             encoder_outputs[ei] += encoder_output[0, 0]
 
-        decoder_input = torch.tensor([[SOS_token]], device=device)  # SOS
+        decoder_input: torch.Tensor = torch.tensor([[Vocab.start_of_sequence]], device=device)  # SOS
 
-        decoder_hidden = encoder_hidden
+        decoder_hidden: torch.Tensor = encoder_hidden
 
-        decoded_words = []
-        decoder_attentions = torch.zeros(max_length, max_length)
+        decoded_words: List[str] = []
+        decoder_attentions: torch.Tensor = torch.zeros(max_length, max_length)
 
-        for di in range(max_length):
+        di: int = 0
+        for di in range(max_length):  # type: int
             decoder_output, decoder_hidden, decoder_attention = decoder(
                 decoder_input, decoder_hidden, encoder_outputs)
             decoder_attentions[di] = decoder_attention.data
             topv, topi = decoder_output.data.topk(1)
-            if topi.item() == EOS_token:
+            if topi.item() == Vocab.end_of_sequence:
                 decoded_words.append('<EOS>')
                 break
             else:
-                decoded_words.append(output_lang.index2word[topi.item()])
+                decoded_words.append(target_vocab.index2word[topi.item()])
 
             decoder_input = topi.squeeze().detach()
 
         return decoded_words, decoder_attentions[:di + 1]
 
 
-def evaluateRandomly(encoder, decoder, n=10):
-    for i in range(n):
-        pair = random.choice(pairs)
-        print('>', pair[0])
-        print('=', pair[1])
-        output_words, attentions = evaluate(encoder, decoder, pair[0])
+def evaluate_randomly(*,
+                      data: Data,
+                      encoder: EncoderRNN,
+                      decoder: AttnDecoderRNN,
+                      max_length: int,
+                      device: torch.device,
+                      n: int = 10) -> None:
+
+    for i in range(n):  # type: int
+
+        pair: ParallelSentence = random.choice(data.pairs)
+
+        output_words, attentions = evaluate(encoder=encoder,
+                                            decoder=decoder,
+                                            sentence=pair.source,
+                                            source_vocab=data.source_vocab,
+                                            target_vocab=data.target_vocab,
+                                            device=device,
+                                            max_length=max_length)
         output_sentence = ' '.join(output_words)
+
+        print('>', pair.source)
+        print('=', pair.target)
         print('<', output_sentence)
         print('')
 
@@ -373,35 +457,95 @@ def showAttention(input_sentence, output_words, attentions):
     plt.show()
 
 
-def evaluateAndShowAttention(input_sentence):
-    output_words, attentions = evaluate(
-        encoder1, attn_decoder1, input_sentence)
-    print('input =', input_sentence)
+def evaluate_and_show_attention(*,
+                                encoder: EncoderRNN,
+                                decoder: AttnDecoderRNN,
+                                sentence: str,
+                                source_vocab: Vocab,
+                                target_vocab: Vocab,
+                                device: torch.device,
+                                max_length: int):
+
+    output_words, attentions = evaluate(encoder=encoder,
+                                        decoder=decoder,
+                                        sentence=sentence,
+                                        source_vocab=source_vocab,
+                                        target_vocab=target_vocab,
+                                        device=device,
+                                        max_length=max_length)
+    print('input =', sentence)
     print('output =', ' '.join(output_words))
-    showAttention(input_sentence, output_words, attentions)
+    showAttention(sentence, output_words, attentions)
 
 
+def run_training():
 
-encoder1 = EncoderRNN(input_lang.n_words, hidden_size).to(device)
-attn_decoder1 = AttnDecoderRNN(hidden_size, output_lang.n_words, dropout_p=0.1).to(device)
+    max_length = 10
 
-trainIters(encoder1, attn_decoder1, 10000, print_every=5000)
+    teacher_forcing_ratio = 0.5
+    hidden_size = 256
+    eng_prefixes: Tuple[str, ...] = (
+        "i am ", "i m ",
+        "he is", "he s ",
+        "she is", "she s ",
+        "you are", "you re ",
+        "we are", "we re ",
+        "they are", "they re "
+    )
+
+    data: Data = prepare_data(lang1='eng',
+                              lang2='fra',
+                              max_length=max_length,
+                              prefixes=eng_prefixes,
+                              reverse=True)
+
+    print(len(data))
+    print(random.choice(data.pairs))
+
+    device: torch.device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+
+    encoder1: EncoderRNN = EncoderRNN(input_size=data.source_vocab.n_words,
+                                      hidden_size=hidden_size).to(device=device)
+
+    attn_decoder1 = AttnDecoderRNN(hidden_size=hidden_size,
+                                   output_size=data.target_vocab.n_words,
+                                   dropout_p=0.1,
+                                   max_length=max_length).to(device=device)
+
+    train_iters(data=data,
+                encoder=encoder1,
+                decoder=attn_decoder1,
+                device=device,
+                max_length=max_length,
+                n_iters=10000,
+                print_every=5000,
+                plot_every=100,
+                learning_rate=0.01,
+                teacher_forcing_ratio=teacher_forcing_ratio)
+
+    evaluate_randomly(data=data, encoder=encoder1, decoder=attn_decoder1, n=10, device=device, max_length=max_length)
+
+    output_words, attentions = evaluate(encoder=encoder1,
+                                        decoder=attn_decoder1,
+                                        sentence="je suis trop froid .",
+                                        source_vocab=data.source_vocab,
+                                        target_vocab=data.target_vocab,
+                                        device=device,
+                                        max_length=max_length)
+
+    if False:
+
+        plt.matshow(attentions.numpy())
+
+        evaluateAndShowAttention("elle a cinq ans de moins que moi .", encoder1, attn_decoder1)
+
+        evaluateAndShowAttention("elle est trop petit .", encoder1, attn_decoder1)
+
+        evaluateAndShowAttention("je ne crains pas de mourir .", encoder1, attn_decoder1)
+
+        evaluateAndShowAttention("c est un jeune directeur plein de talent .", encoder1, attn_decoder1)
 
 
-evaluateRandomly(encoder1, attn_decoder1)
+if __name__ == "__main__":
 
-
-output_words, attentions = evaluate(
-    encoder1, attn_decoder1, "je suis trop froid .")
-
-if False:
-
-    plt.matshow(attentions.numpy())
-
-    evaluateAndShowAttention("elle a cinq ans de moins que moi .")
-
-    evaluateAndShowAttention("elle est trop petit .")
-
-    evaluateAndShowAttention("je ne crains pas de mourir .")
-
-    evaluateAndShowAttention("c est un jeune directeur plein de talent .")
+    run_training()
