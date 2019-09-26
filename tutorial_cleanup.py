@@ -259,7 +259,7 @@ def train(*,
 
     encoder_outputs = torch.zeros(max_length, encoder.hidden_size, device=device)
 
-    loss = 0
+    loss: torch.Tensor = torch.tensor(0, dtype=torch.float)
 
     for ei in range(input_length):
         encoder_output, encoder_hidden = encoder(
