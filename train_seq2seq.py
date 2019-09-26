@@ -3,12 +3,13 @@ import time
 from typing import List, Tuple
 
 import torch
+import torch.nn as nn
 from torch.nn.functional import cross_entropy, softmax
 from torch.optim import SGD
 from torch.utils.data import DataLoader
 
 from data import PigLatin
-from seq2seq import EncoderWithEmbedding, DecoderWithAttention, verify_shape
+from seq2seq import EncoderWithEmbedding, DecoderWithAttention, verify_shape, TutorialEncoderRNN, TutorialAttnDecoderRNN
 
 
 def format_time(seconds):
@@ -147,7 +148,100 @@ def train_seq2seq(*, path: str,
     return
 
 
+def tutorial_train(input_tensor, target_tensor, encoder, decoder, encoder_optimizer, decoder_optimizer, criterion,
+                   device, start_of_sequence, end_of_sequence, max_length=10):
+    encoder_hidden = encoder.init_hidden(device)
+
+    encoder_optimizer.zero_grad()
+    decoder_optimizer.zero_grad()
+
+    input_length = input_tensor.size(0)
+    target_length = target_tensor.size(0)
+
+    encoder_outputs = torch.zeros(max_length, encoder.hidden_size, device=device)
+
+    loss = 0
+    #print(f"{input_tensor.shape}")
+    for ei in range(input_length):
+        encoder_output, encoder_hidden = encoder(
+            input_tensor[ei], encoder_hidden)
+        encoder_outputs[ei] = encoder_output[0, 0]
+
+    decoder_input = torch.tensor([[start_of_sequence]], device=device)
+
+    decoder_hidden = encoder_hidden
+
+    for di in range(target_length):
+        decoder_output, decoder_hidden, decoder_attention = decoder(
+            decoder_input, decoder_hidden, encoder_outputs)
+        top_v, top_i = decoder_output.topk(1)
+        decoder_input = top_i.squeeze().detach()  # detach from history as input
+
+        loss += criterion(decoder_output, target_tensor[di])
+        if decoder_input.item() == end_of_sequence:
+            break
+
+    loss.backward()
+
+    encoder_optimizer.step()
+    decoder_optimizer.step()
+
+    return loss.item() / target_length
+
+
+def tutorial_train_iters(*, training_data_path="training_data.txt", batch_size=1,
+                         epochs=100, print_every=1000, learning_rate=0.01, hidden_size=256):
+
+    words: PigLatin = PigLatin(path=training_data_path)
+    data: DataLoader = DataLoader(dataset=words, batch_size=batch_size)
+
+    start_of_sequence = words.vocab.start_of_sequence
+    end_of_sequence = words.vocab.end_of_sequence
+    max_length = words.max_len
+
+    encoder = TutorialEncoderRNN(len(words.vocab), hidden_size)
+    decoder = TutorialAttnDecoderRNN(hidden_size, len(words.vocab))
+
+    start = time.time()
+
+    print_loss_total = 0  # Reset every print_every
+    plot_loss_total = 0  # Reset every plot_every
+
+    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+
+    encoder_optimizer = SGD(encoder.parameters(), lr=learning_rate)
+    decoder_optimizer = SGD(decoder.parameters(), lr=learning_rate)
+
+    criterion = nn.NLLLoss()
+
+    for epoch in range(epochs):
+
+        for batch in data:  # type: torch.Tensor
+
+            input_tensor: torch.Tensor = batch["data"].squeeze(dim=0).to(device)
+            target_tensor: torch.LongTensor = batch["labels"].to(device)
+
+            loss = tutorial_train(input_tensor, target_tensor, encoder, decoder, encoder_optimizer, decoder_optimizer,
+                                  criterion, device, start_of_sequence, end_of_sequence, max_length)
+            print_loss_total += loss
+            plot_loss_total += loss
+
+            if epoch % print_every == 0:
+                print_loss_avg = print_loss_total / print_every
+                print_loss_total = 0
+                print(f"{time_since(start)} ({iter} {iter / n_iters * 100}%) {print_loss_avg}")
+
+
 if __name__ == "__main__":
+
+    import sys
+    print(f"Training seq2seq from {sys.argv[1]}")
+    sys.stdout.flush()
+
+    tutorial_train_iters(training_data_path="training_data.txt", batch_size=1,
+                         epochs=100, print_every=1000, learning_rate=0.01, hidden_size=256)
+
+if __name__ != "__main__":
 
     import sys
 
