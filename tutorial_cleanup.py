@@ -196,22 +196,35 @@ def prepare_data(*,
 
 
 class EncoderRNN(nn.Module):
-    def __init__(self, *, input_size: int, hidden_size: int):
+    def __init__(self, *, input_size: int, embedding_size: int, hidden_size: int, num_hidden_layers: int):
         super(EncoderRNN, self).__init__()
         self.hidden_size: int = hidden_size
-        self.embedding: nn.Embedding = nn.Embedding(input_size, hidden_size)
-        self.gru: nn.GRU = nn.GRU(hidden_size, hidden_size)
+        self.embedding: nn.Embedding = nn.Embedding(input_size, embedding_size)
+        self.gru: nn.GRU = nn.GRU(embedding_size, hidden_size, num_layers=num_hidden_layers)
 
     def forward(self,
                 input_tensor: torch.Tensor,
-                hidden: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:  # type: ignore[override]
-        embedded: torch.Tensor = self.embedding(input_tensor).view(1, 1, -1)
-        output: torch.Tensor = embedded
-        output, hidden = self.gru(output, hidden)
+                hidden: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:  # ignore[override]
+
+        # input_tensor.shape:                   [batch_size=1]
+        # self.embedding(input_tensor).shape:   [batch_size=1, embedding_size=256]
+        #
+        # embedded: torch.Tensor = self.embedding(input_tensor).view(1, 1, -1)  # <--- Original tutorial line
+        embedded: torch.Tensor = self.embedding(input_tensor).unsqueeze(dim=0)  # <--- Replacement to enable batching
+
+        # embedded.shape:            [seq_len=1, batch_size=1, embedding_size=256]
+        #
+        output, hidden = self.gru(embedded, hidden)
+
+        # output.shape:              [seq_len=1, batch_size=1, hidden_size=256]
+        # hidden.shape:           [num_layers=1, batch_size=1, hidden_size=256]
+        #
         return output, hidden
 
-    def init_hidden(self, *, device: torch.device) -> torch.Tensor:
-        return torch.zeros(1, 1, self.hidden_size, device=device)
+    def init_hidden(self, *, batch_size: int = 1, device: torch.device) -> torch.Tensor:
+        # hidden.shape:           [num_layers=1, batch_size=1, hidden_size=256]
+        hidden: torch.Tensor = torch.zeros(self.gru.num_layers, batch_size, self.hidden_size, device=device)
+        return hidden
 
 
 class AttnDecoderRNN(nn.Module):
@@ -345,6 +358,7 @@ def train(*,
           criterion: nn.Module,
           device: torch.device,
           max_length: int,
+          batch_size: int,
           teacher_forcing_ratio: float) -> float:
 
     encoder_hidden = encoder.init_hidden(device=device)  # shape: [1, 1, hidden_size]
@@ -427,6 +441,7 @@ def train_iters(*,
                 device: torch.device,
                 max_length: int,
                 n_iters: int,
+                batch_size: int,
                 teacher_forcing_ratio: float,
                 print_every: int = 1000,
                 plot_every: int = 100,
@@ -463,6 +478,7 @@ def train_iters(*,
                             criterion=criterion,
                             device=device,
                             max_length=max_length,
+                            batch_size=batch_size,
                             teacher_forcing_ratio=teacher_forcing_ratio)
 
         print_loss_total += loss
@@ -599,7 +615,7 @@ def run_training():
     max_length = 10
 
     teacher_forcing_ratio = 0.5
-    hidden_size = 256
+
     eng_prefixes: Tuple[str, ...] = (
         "i am ", "i m ",
         "he is", "he s ",
@@ -621,9 +637,11 @@ def run_training():
     device: torch.device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
     encoder1: EncoderRNN = EncoderRNN(input_size=data.source_vocab.n_words,
-                                      hidden_size=hidden_size).to(device=device)
+                                      embedding_size=200,
+                                      hidden_size=256,
+                                      num_hidden_layers=1).to(device=device)
 
-    attn_decoder1 = AttnDecoderRNN(hidden_size=hidden_size,
+    attn_decoder1 = AttnDecoderRNN(hidden_size=256,
                                    output_size=data.target_vocab.n_words,
                                    dropout_p=0.1,
                                    max_length=max_length).to(device=device)
@@ -634,6 +652,7 @@ def run_training():
                 device=device,
                 max_length=max_length,
                 n_iters=100,
+                batch_size=1,
                 print_every=25,
                 plot_every=100,
                 learning_rate=0.01,
