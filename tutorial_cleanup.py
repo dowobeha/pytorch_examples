@@ -284,46 +284,51 @@ class AttnDecoderRNN(nn.Module):
         # encoder_outputs.unsqueeze(0).shape:     [1, decoder_max_len, decoder_hidden_size]
         attn_applied = torch.bmm(attn_weights.unsqueeze(0), encoder_outputs.unsqueeze(0))
 
-        # attn_applied.shape:                                [1, 1, decoder_hidden_size]
-        #
-        # embedded[0].shape:                                    [1, decoder_hidden_size]
-        # attn_applied[0].shape:                                [1, decoder_hidden_size]
-        #
-        # torch.cat((embedded[0], attn_applied[0]), 1).shape:   [1, decoder_hidden_size+decoder_hidden_size]
-        #
-        # self.attn_combine(output).shape:                      [1, decoder_hidden_size]
-        # self.attn_combine(output).unsqueeze(0)             [1, 1, decoder_hidden_size]
-        #
-        # relu(...).shape:                                   [1, 1, decoder_hidden_size]
-        # hidden.shape:                                      [1, 1, decoder_hidden_size]
-
         # print(f"attn_applied.shape={attn_applied.shape}\t\t"+
         #       f"embedded[0].shape={embedded[0].shape}\t\t"+
         #       f"attn_applied[0].shape={attn_applied[0].shape}\t\t"
         #       f"torch.cat(...).shape={torch.cat((embedded[0], attn_applied[0]), 1).shape}")
 
+        # embedded.shape:                                  [1, batch_size=1, decoder_embedding_size]
+        # attn_applied.shape:                              [1, batch_size=1, decoder_hidden_size]
+        #
+        # embedded[0].shape:                                  [batch_size=1, decoder_embedding_size]
+        # attn_applied[0].shape:                              [batch_size=1, decoder_hidden_size]
+        #
+        # torch.cat((embedded[0], attn_applied[0]), 1).shape: [batch_size=1, decoder_embedding_size+decoder_hidden_size]
+        #
         output = torch.cat((embedded[0], attn_applied[0]), 1)
+
+        # output.shape:                                      [batch_size=1, decoder_hidden_size+decoder_embedding_size]
+        # self.attn_combine(output).shape:                   [batch_size=1, decoder_hidden_size]
+        # self.attn_combine(output).unsqueeze(0): [seq_len=1, batch_size=1, decoder_hidden_size]
+        #
         output = self.attn_combine(output).unsqueeze(0)
 
+        # print(f"output.shape={output.shape}")
         # print(f"relu(output).shape={relu(output).shape}\t\thidden.shape={hidden.shape}")
 
+        # output.shape:                [seq_length=1, batch_size=1, decoder_hidden_size]
+        # relu(...).shape:             [seq_length=1, batch_size=1, decoder_hidden_size]
+        # hidden.shape:                [num_layers=1, batch_size=1, decoder_hidden_size]
+        #
         output = relu(output)
         output, hidden = self.gru(output, hidden)
 
         # print(f"output.shape={output.shape}\t\thidden.shape={hidden.shape}\t\toutput[0].shape={output[0].shape}")
 
-        # output.shape:                                   [1, 1, decoder_hidden_size]
-        # hidden.shape:                                   [1, 1, decoder_hidden_size]
+        # output.shape:             [seq_length=1, batch_size=1, decoder_hidden_size]
+        # hidden.shape:             [num_layers=1, batch_size=1, decoder_hidden_size]
         #
-        # output[0].shape:                                   [1, decoder_hidden_size]
+        # output[0].shape:                        [batch_size=1, decoder_hidden_size]
         output = log_softmax(self.out(output[0]), dim=1)
 
         # print(f"output.shape={output.shape}\t\thidden.shape={hidden.shape}\t\tattn_weights.shape={attn_weights.shape}")
 
-        # output.shape:                                      [1, decoder_output_size]
-        # hidden.shape:                                   [1, 1, decoder_hidden_size]
+        # output.shape:                           [batch_size=1, decoder_output_size]
+        # hidden.shape:             [num_layers=1, batch_size=1, decoder_hidden_size]
         # attn_weights:                                      [1, encoder_max_len]
-
+        #
         return output, hidden, attn_weights
 
     def init_hidden(self, *, device):
