@@ -53,8 +53,8 @@ class Vocab:
         else:
             return Vocab.oov
 
-    def add_sentence(self, sentence: str) -> None:
-        for word in sentence.split(' '):  # type: str
+    def add_sentence(self, sentence: List[str]) -> None:
+        for word in sentence:  # type: str
             self.add_word(word)
 
     def add_word(self, word: str) -> None:
@@ -66,15 +66,19 @@ class Vocab:
         else:
             self.word2count[word] += 1
 
-    def indexes_from_sentence(self, sentence: str) -> List[int]:
-        return [self[word] for word in sentence.split(' ')]
+#    def indexes_from_sentence(self, sentence: str) -> List[int]:
+#        return [self[word] for word in sentence.split(' ')]
 
-    def tensor_from_sentence(self, sentence: str, device: torch.device) -> torch.LongTensor:
-        indexes: List[int] = self.indexes_from_sentence(sentence)
+    def tensor_from_sentence(self, sentence: List[str], max_len: int, device: torch.device) -> torch.LongTensor:
+        indexes: List[int] = [self[word] for word in sentence]  # self.indexes_from_sentence(sentence)
         indexes.append(Vocab.end_of_sequence)
+        while len(indexes) < max_len:
+            indexes.append(Vocab.pad)
         result = torch.LongTensor(indexes, device=device)  # shape: [seq_len]
         # result = result.view(-1, 1)  # shape: [seq_len, 1]
-        return result # shape: [seq_len, 1]
+        #print(f"{result.shape}")
+        # sys.exit()
+        return result # shape: [seq_len]
 
 
 class ParallelTensor:
@@ -84,17 +88,24 @@ class ParallelTensor:
 
 
 class ParallelSentence:
-    def __init__(self, source_sentence: str, target_sentence: str):
-        self.source: str = source_sentence
-        self.target: str = target_sentence
+    def __init__(self, source_sentence: List[str], target_sentence: List[str]):
+        self.source: List[str] = source_sentence
+        self.target: List[str] = target_sentence
 
-    def tensors(self, *, source_vocab: Vocab, target_vocab: Vocab, device: torch.device) -> ParallelTensor:
-        source_tensor: torch.Tensor = source_vocab.tensor_from_sentence(sentence=self.source, device=device)
-        target_tensor: torch.Tensor = target_vocab.tensor_from_sentence(sentence=self.target, device=device)
+    def tensors(self, *,
+                source_vocab: Vocab, max_src_length: int,
+                target_vocab: Vocab, max_tgt_length: int,
+                device: torch.device) -> ParallelTensor:
+        source_tensor: torch.Tensor = source_vocab.tensor_from_sentence(sentence=self.source,
+                                                                        max_len=max_src_length,
+                                                                        device=device)
+        target_tensor: torch.Tensor = target_vocab.tensor_from_sentence(sentence=self.target,
+                                                                        max_len=max_tgt_length,
+                                                                        device=device)
         return ParallelTensor(source_tensor, target_tensor)
 
     def __str__(self) -> str:
-        return f"{self.source}\t{self.target}"
+        return f"{''.join(self.source)}\t{''.join(self.target)}"
 
 
 class Data:
@@ -118,14 +129,25 @@ class Data:
 
 class ParallelData(torch.utils.data.Dataset):
     def __init__(self, data: Data, device: torch.device):
+        print(repr(data))
+        if len(data.pairs) == 0:
+            raise ValueError(f"Cannot create parallel data containing zero examples.")
         self.source_vocab: Vocab = data.source_vocab
         self.target_vocab: Vocab = data.target_vocab
+        print(f"data.length={len(data.pairs)}")
+        self.max_src_length: int = 1 + max([len(pair.source) for pair in data.pairs])
+        self.max_tgt_length: int = 1 + max([len(pair.target) for pair in data.pairs])
+        print(f"self.max_src_length={self.max_src_length}\t\tself.max_tgt_length={self.max_tgt_length}")
         self.pairs: List[ParallelTensor] = [pair.tensors(source_vocab=data.source_vocab,
                                                          target_vocab=data.target_vocab,
+                                                         max_src_length=self.max_src_length,
+                                                         max_tgt_length=self.max_tgt_length,
                                                          device=device)
                                             for pair in data.pairs]
 
     def __getitem__(self, index: int) -> Mapping[str, torch.Tensor]:
+        print(f"data -> {self.pairs[index].source.shape}\t\t" +
+              f"labels -> {self.pairs[index].target.shape}")
         return {"data":   self.pairs[index].source,
                 "labels": self.pairs[index].target}
 
@@ -168,17 +190,17 @@ def read_data(lang1: str, lang2: str, reverse: bool = False) -> Data:
         input_vocab = Vocab(lang1)
         output_vocab = Vocab(lang2)
 
-    pairs: List[ParallelSentence] = [ParallelSentence(source_sentence=parallel_line[0],
-                                                      target_sentence=parallel_line[1])
+    pairs: List[ParallelSentence] = [ParallelSentence(source_sentence=parallel_line[0].split(),
+                                                      target_sentence=parallel_line[1].split())
                                      for parallel_line in parallel_data]
 
     return Data(source_vocab=input_vocab, target_vocab=output_vocab, pairs=pairs)
 
 
 def filter_pair(*, pair: ParallelSentence, max_length: int, prefixes: Tuple[str, ...]) -> bool:
-    return len(pair.source.split(' ')) < max_length and \
-        len(pair.target.split(' ')) < max_length and \
-        pair.target.startswith(prefixes)
+    return len(pair.source) < max_length and \
+        len(pair.target) < max_length and \
+           (' '.join(pair.target)).startswith(prefixes)
 
 
 def filter_pairs(*,
@@ -220,7 +242,7 @@ class EncoderRNN(nn.Module):
     def forward(self,
                 input_tensor: torch.Tensor,
                 hidden: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:  # ignore[override]
-        #print(f"input_tensor.shape={input_tensor.shape}")
+        # print(f"input_tensor.shape={input_tensor.shape}")
         #sys.exit()
         # input_tensor.shape:                   [batch_size=1]
         # self.embedding(input_tensor).shape:   [batch_size=1, embedding_size=256]
@@ -403,7 +425,7 @@ def train(*,
           batch_size: int,
           teacher_forcing_ratio: float) -> float:
 
-    print(f"input_tensor.shape={input_tensor.shape}\t\ttarget_tensor.shape={target_tensor.shape}")
+    # print(f"input_tensor.shape={input_tensor.shape}\t\ttarget_tensor.shape={target_tensor.shape}")
 
     encoder_hidden = encoder.init_hidden(batch_size=batch_size,
                                          device=device)         # shape: [num_layers, batch_size, hidden_size]
@@ -516,6 +538,9 @@ def train_iters(*, #data: Data,
 
     criterion: nn.NLLLoss = nn.NLLLoss()
 
+    for pair in parallel_data:
+        print(f"src={len(pair['data'])}\ttgt={len(pair['labels'])}")
+
     for iteration in range(1, n_iters + 1):  # type: int
 
         # training_pair: ParallelTensor = training_pairs[iteration - 1]
@@ -523,7 +548,8 @@ def train_iters(*, #data: Data,
         # target_tensor: torch.Tensor = training_pair.target  # shape: [seq_len, batch_size=1]
 
         for batch in data:
-
+            print(f"batch['data'].shape={batch['data'].shape}\tbatch['labels'].shape{batch['labels'].shape}")
+           # sys.exit()
             input_tensor: torch.Tensor = batch["data"].permute(1, 0)
             target_tensor: torch.Tensor = batch["labels"].permute(1, 0)
 
@@ -562,15 +588,17 @@ def train_iters(*, #data: Data,
 def evaluate(*,
              encoder: EncoderRNN,
              decoder: AttnDecoderRNN,
-             sentence: str,
+             sentence: List[str],
              source_vocab: Vocab,
              target_vocab: Vocab,
              device: torch.device,
              max_length: int):
 
     with torch.no_grad():
-        input_tensor: torch.Tensor = source_vocab.tensor_from_sentence(sentence, device=device).unsqueeze(dim=1)
-        input_length: int = input_tensor.size()[0]
+        input_tensor: torch.Tensor = source_vocab.tensor_from_sentence(sentence=sentence,
+                                                                       max_len=max_length,
+                                                                       device=device).unsqueeze(dim=1)
+        input_length: int = input_tensor.size()[0]  # TODO: This is wrong
         encoder_hidden: torch.Tensor = encoder.init_hidden(device=device)
 
         encoder_outputs: torch.Tensor = torch.zeros(max_length, encoder.hidden_size, device=device)
@@ -595,7 +623,7 @@ def evaluate(*,
             decoder_attentions[di] = decoder_attention.data
             topv, topi = decoder_output.data.topk(1)
             if topi.item() == Vocab.end_of_sequence:
-                decoded_words.append('<EOS>')
+                decoded_words.append(target_vocab.index2word[Vocab.end_of_sequence])
                 break
             else:
                 decoded_words.append(target_vocab.index2word[topi.item()])
@@ -632,7 +660,7 @@ def evaluate_randomly(*,
         print('')
 
 
-def show_attention(*, input_sentence, output_words, attentions):
+def show_attention(*, input_sentence: List[str], output_words, attentions):
     # Set up figure with colorbar
     fig = plt.figure()
     ax = fig.add_subplot(111)
@@ -640,7 +668,7 @@ def show_attention(*, input_sentence, output_words, attentions):
     fig.colorbar(cax)
 
     # Set up axes
-    ax.set_xticklabels([''] + input_sentence.split(' ') +
+    ax.set_xticklabels([''] + input_sentence +
                        ['<EOS>'], rotation=90)
     ax.set_yticklabels([''] + output_words)
 
@@ -654,7 +682,7 @@ def show_attention(*, input_sentence, output_words, attentions):
 def evaluate_and_show_attention(*,
                                 encoder: EncoderRNN,
                                 decoder: AttnDecoderRNN,
-                                sentence: str,
+                                sentence: List[str],
                                 source_vocab: Vocab,
                                 target_vocab: Vocab,
                                 device: torch.device,
@@ -700,7 +728,6 @@ def run_training():
 
     parallel_data = ParallelData(data, device)
 
-
     encoder1: EncoderRNN = EncoderRNN(input_size=data.source_vocab.n_words,
                                       embedding_size=200,
                                       hidden_size=256,
@@ -733,7 +760,7 @@ def run_training():
 
         output_words, attentions = evaluate(encoder=encoder1,
                                             decoder=attn_decoder1,
-                                            sentence="je suis trop froid .",
+                                            sentence="je suis trop froid .".split(),
                                             source_vocab=data.source_vocab,
                                             target_vocab=data.target_vocab,
                                             device=device,
@@ -746,7 +773,7 @@ def run_training():
                          "je ne crains pas de mourir .",
                          "c est un jeune directeur plein de talent ."]:
 
-            evaluate_and_show_attention(sentence=sentence,
+            evaluate_and_show_attention(sentence=sentence.split(),
                                         encoder=encoder1,
                                         decoder=attn_decoder1,
                                         source_vocab=data.source_vocab,
