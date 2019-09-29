@@ -3,7 +3,7 @@ import random
 import re
 import sys
 import time
-from typing import Iterable, List, MutableMapping, Tuple, Union
+from typing import Iterable, List, Mapping, MutableMapping, Tuple
 import unicodedata
 
 import matplotlib.pyplot as plt  # type: ignore
@@ -73,9 +73,7 @@ class Vocab:
         indexes: List[int] = self.indexes_from_sentence(sentence)
         indexes.append(Vocab.end_of_sequence)
         result = torch.LongTensor(indexes, device=device)  # shape: [seq_len]
-        # print(result.shape)
-        result = result.view(-1, 1)  # shape: [seq_len, 1]
-        # print("\t" + str(result.shape))
+        # result = result.view(-1, 1)  # shape: [seq_len, 1]
         return result # shape: [seq_len, 1]
 
 
@@ -117,6 +115,22 @@ class Data:
     def __repr__(self) -> str:
         return f"Data({self.source_vocab.name}-{self.target_vocab.name} with {len(self.pairs)} parallel sentences)"
 
+
+class ParallelData(torch.utils.data.Dataset):
+    def __init__(self, data: Data, device: torch.device):
+        self.source_vocab: Vocab = data.source_vocab
+        self.target_vocab: Vocab = data.target_vocab
+        self.pairs: List[ParallelTensor] = [pair.tensors(source_vocab=data.source_vocab,
+                                                         target_vocab=data.target_vocab,
+                                                         device=device)
+                                            for pair in data.pairs]
+
+    def __getitem__(self, index: int) -> Mapping[str, torch.Tensor]:
+        return {"data":   self.pairs[index].source,
+                "labels": self.pairs[index].target}
+
+    def __len__(self):
+        return len(self.pairs)
 
 # Turn a Unicode string to plain ASCII, thanks to
 # https://stackoverflow.com/a/518232/2809427
@@ -206,13 +220,16 @@ class EncoderRNN(nn.Module):
     def forward(self,
                 input_tensor: torch.Tensor,
                 hidden: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:  # ignore[override]
-
+        #print(f"input_tensor.shape={input_tensor.shape}")
+        #sys.exit()
         # input_tensor.shape:                   [batch_size=1]
         # self.embedding(input_tensor).shape:   [batch_size=1, embedding_size=256]
         #
         # embedded: torch.Tensor = self.embedding(input_tensor).view(1, 1, -1)  # <--- Original tutorial line
         embedded: torch.Tensor = self.embedding(input_tensor).unsqueeze(dim=0)  # <--- Replacement to enable batching
-
+        #embedded: torch.Tensor = self.embedding(input_tensor)
+        #print(f"embedded.shape={embedded.shape}\t\thidden.shape={hidden.shape}")
+        #sys.exit()
         # embedded.shape:            [seq_len=1, batch_size=1, embedding_size=256]
         #
         output, hidden = self.gru(embedded, hidden)
@@ -386,6 +403,8 @@ def train(*,
           batch_size: int,
           teacher_forcing_ratio: float) -> float:
 
+    print(f"input_tensor.shape={input_tensor.shape}\t\ttarget_tensor.shape={target_tensor.shape}")
+
     encoder_hidden = encoder.init_hidden(batch_size=batch_size,
                                          device=device)         # shape: [num_layers, batch_size, hidden_size]
 
@@ -423,8 +442,8 @@ def train(*,
     # decoder_hidden = encoder_hidden   # <--- Original tutorial
     decoder_hidden = decoder.init_hidden(batch_size=batch_size, device=device)
 
-    # use_teacher_forcing = True if random.random() < teacher_forcing_ratio else False
-    use_teacher_forcing = True
+    use_teacher_forcing = True if random.random() < teacher_forcing_ratio else False
+    # use_teacher_forcing = True
 
     if use_teacher_forcing:
 
@@ -466,8 +485,8 @@ def show_plot(points: List[float]) -> None:
     plt.plot(points)
 
 
-def train_iters(*,
-                data: Data,
+def train_iters(*, #data: Data,
+                parallel_data: ParallelData,
                 encoder: EncoderRNN,
                 decoder: AttnDecoderRNN,
                 device: torch.device,
@@ -480,6 +499,8 @@ def train_iters(*,
                 learning_rate: float = 0.01
                 ) -> None:
 
+    data = torch.utils.data.DataLoader(dataset=parallel_data, batch_size=batch_size)
+
     start: float = time.time()
     plot_losses: List[float] = []
     print_loss_total: float = 0  # Reset every print_every
@@ -487,34 +508,42 @@ def train_iters(*,
 
     encoder_optimizer: Optimizer = SGD(encoder.parameters(), lr=learning_rate)
     decoder_optimizer: Optimizer = SGD(decoder.parameters(), lr=learning_rate)
-
-    training_pairs: List[ParallelTensor] = [random.choice(data.pairs).tensors(source_vocab=data.source_vocab,
-                                                                              target_vocab=data.target_vocab,
-                                                                              device=device)
-                                            for _ in range(n_iters)]
+    #
+    # training_pairs: List[ParallelTensor] = [random.choice(data.pairs).tensors(source_vocab=data.source_vocab,
+    #                                                                           target_vocab=data.target_vocab,
+    #                                                                           device=device)
+    #                                         for _ in range(n_iters)]
 
     criterion: nn.NLLLoss = nn.NLLLoss()
 
     for iteration in range(1, n_iters + 1):  # type: int
 
-        training_pair: ParallelTensor = training_pairs[iteration - 1]
-        input_tensor: torch.Tensor = training_pair.source   # shape: [seq_len, batch_size=1]
-        target_tensor: torch.Tensor = training_pair.target  # shape: [seq_len, batch_size=1]
+        # training_pair: ParallelTensor = training_pairs[iteration - 1]
+        # input_tensor: torch.Tensor = training_pair.source   # shape: [seq_len, batch_size=1]
+        # target_tensor: torch.Tensor = training_pair.target  # shape: [seq_len, batch_size=1]
 
-        loss: float = train(input_tensor=input_tensor,
-                            target_tensor=target_tensor,
-                            encoder=encoder,
-                            decoder=decoder,
-                            encoder_optimizer=encoder_optimizer,
-                            decoder_optimizer=decoder_optimizer,
-                            criterion=criterion,
-                            device=device,
-                            max_src_length=max_length,
-                            batch_size=batch_size,
-                            teacher_forcing_ratio=teacher_forcing_ratio)
+        for batch in data:
 
-        print_loss_total += loss
-        plot_loss_total += loss
+            input_tensor: torch.Tensor = batch["data"].permute(1, 0)
+            target_tensor: torch.Tensor = batch["labels"].permute(1, 0)
+
+            # print(f"input_tensor.shape={input_tensor.shape}\t\ttarget_tensor.shape={target_tensor.shape}")
+            # sys.exit()
+
+            loss: float = train(input_tensor=input_tensor,
+                                target_tensor=target_tensor,
+                                encoder=encoder,
+                                decoder=decoder,
+                                encoder_optimizer=encoder_optimizer,
+                                decoder_optimizer=decoder_optimizer,
+                                criterion=criterion,
+                                device=device,
+                                max_src_length=max_length,
+                                batch_size=batch_size,
+                                teacher_forcing_ratio=teacher_forcing_ratio)
+
+            print_loss_total += loss
+            plot_loss_total += loss
 
         if iteration % print_every == 0:
             print_loss_avg: float = print_loss_total / print_every
@@ -540,12 +569,12 @@ def evaluate(*,
              max_length: int):
 
     with torch.no_grad():
-        input_tensor: torch.Tensor = source_vocab.tensor_from_sentence(sentence, device=device)
+        input_tensor: torch.Tensor = source_vocab.tensor_from_sentence(sentence, device=device).unsqueeze(dim=1)
         input_length: int = input_tensor.size()[0]
         encoder_hidden: torch.Tensor = encoder.init_hidden(device=device)
 
         encoder_outputs: torch.Tensor = torch.zeros(max_length, encoder.hidden_size, device=device)
-
+        # print(f"input_tensor.shape={input_tensor.shape}")
         for ei in range(input_length):  # type: int
             encoder_output, encoder_hidden = encoder(input_tensor[ei],
                                                      encoder_hidden)
@@ -647,7 +676,7 @@ def run_training():
 
     max_length = 10
 
-    teacher_forcing_ratio = 0.5
+    teacher_forcing_ratio = 0.0
 
     eng_prefixes: Tuple[str, ...] = (
         "i am ", "i m ",
@@ -664,10 +693,13 @@ def run_training():
                               prefixes=eng_prefixes,
                               reverse=True)
 
-    print(len(data))
-    print(random.choice(data.pairs))
+    # print(len(data))
+    # print(random.choice(data.pairs))
 
     device: torch.device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+
+    parallel_data = ParallelData(data, device)
+
 
     encoder1: EncoderRNN = EncoderRNN(input_size=data.source_vocab.n_words,
                                       embedding_size=200,
@@ -682,7 +714,7 @@ def run_training():
                                    dropout_p=0.1,
                                    max_length=max_length).to(device=device)
 
-    train_iters(data=data,
+    train_iters(parallel_data=parallel_data,
                 encoder=encoder1,
                 decoder=attn_decoder1,
                 device=device,
