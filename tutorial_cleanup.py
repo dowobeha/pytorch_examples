@@ -1,6 +1,7 @@
 import math
 import random
 import re
+import sys
 import time
 from typing import Iterable, List, MutableMapping, Tuple, Union
 import unicodedata
@@ -228,52 +229,69 @@ class EncoderRNN(nn.Module):
 
 
 class AttnDecoderRNN(nn.Module):
-    def __init__(self, *, hidden_size, output_size, dropout_p=0.1, max_length):
+    def __init__(self, *,
+                 embedding_size: int,
+                 decoder_hidden_size: int,
+                 encoder_hidden_size: int,
+                 num_hidden_layers: int,
+                 output_size: int,
+                 dropout_p: float = 0.1,
+                 max_length: int):
         super(AttnDecoderRNN, self).__init__()
-        self.hidden_size = hidden_size
-        self.output_size = output_size
-        self.dropout_p = dropout_p
-        self.max_length = max_length
+        self.decoder_hidden_size: int = decoder_hidden_size
+        self.encoder_hidden_size: int = encoder_hidden_size
+        self.embedding_size: int = embedding_size
+        self.output_size: int = output_size
+        self.dropout_p: float = dropout_p
+        self.max_length: int = max_length
 
-        self.embedding = nn.Embedding(self.output_size, self.hidden_size)
-        self.attn = nn.Linear(self.hidden_size * 2, self.max_length)
-        self.attn_combine = nn.Linear(self.hidden_size * 2, self.hidden_size)
+        self.embedding = nn.Embedding(self.output_size, self.embedding_size)
+        self.attn = nn.Linear(self.embedding_size + self.decoder_hidden_size, self.max_length)
+        self.attn_combine = nn.Linear(self.embedding_size + self.encoder_hidden_size, self.encoder_hidden_size)
         self.dropout = nn.Dropout(self.dropout_p)
-        self.gru = nn.GRU(self.hidden_size, self.hidden_size)
-        self.out = nn.Linear(self.hidden_size, self.output_size)
+        self.gru = nn.GRU(self.encoder_hidden_size, self.decoder_hidden_size, num_hidden_layers)
+        self.out = nn.Linear(self.decoder_hidden_size, self.output_size)
 
     def forward(self, input_tensor: torch.Tensor, hidden: torch.Tensor, encoder_outputs):  # type: ignore[override]
 
         # input_tensor.shape:    [1, 1]
-        # hidden.shape:          [1, 1, decoder_hidden_size]
+        # hidden.shape:          [num_hidden_layers=1, batch_size=1, decoder_hidden_size]
         # encoder_outputs.shape: [src_seq_len, encoder_hidden_size]
 
-        # print(f"decoder input_tensor.shape={input_tensor.shape}\t\t" +
-        #       f"decoder hidden.shape={hidden.shape}\t\t" +
-        #       f"encoder_outputs.shape={encoder_outputs.shape}")
+        #if input_tensor.shape == torch.Size([]):
+        #    raise RuntimeError(f"input_tensor.shape={input_tensor.shape} is a problem")
+
+        if self.embedding(input_tensor).shape != self.embedding(input_tensor).view(1, 1, -1).shape:
+            raise RuntimeError(f"input_tensor.shape={input_tensor.shape}\tembedding is {self.embedding(input_tensor).shape} vs expected {self.embedding(input_tensor).view(1, 1, -1).shape}")
+
+        # print(f"input_tensor={input_tensor}\tdecoder input_tensor.shape={input_tensor.shape}\t\t" +
+        #      f"decoder hidden.shape={hidden.shape}\t\t" +
+        #       f"encoder_outputs.shape={encoder_outputs.shape}") #\t\tembedded.shape={embedded.shape}")
+
 
         # TODO: It should be safe to remove .view(1, 1, -1), as it appears to be a noop
-        embedded = self.embedding(input_tensor).view(1, 1, -1)
+        embedded = self.embedding(input_tensor) #.view(1, 1, -1)
 
-        # self.embedding(input_tensor).shape:  [1, 1, decoder_hidden_size]
-        # embedded.shape:                      [1, 1, decoder_hidden_size]
+        # self.embedding(input_tensor).shape:  [1, 1, decoder_embedding_size]
+        # embedded.shape:                      [1, 1, decoder_embedding_size]
 
         # print(f"self.embedding(input_tensor).shape={self.embedding(input_tensor).shape}\t\t" +
+        #      f"self.embedding(input_tensor).view(1, 1, -1).shape={self.embedding(input_tensor).view(1, 1, -1).shape}\t\t" +
         #      f"embedded.shape={embedded.shape}")
 
         embedded = self.dropout(embedded)
 
         # print(f"embedded[0].shape={embedded[0].shape}\t\t"+
-        #       f"hidden[0].shape={hidden[0].shape}\t\t" +
+        #      f"hidden[0].shape={hidden[0].shape}\t\t" )
+        # sys.exit()
         #       f"torch.cat(tensors=(embedded[0], hidden[0]), dim=1).shape="+
         #       f"{torch.cat(tensors=(embedded[0], hidden[0]), dim=1).shape}")
-        #
-        # print(f"self.attn(...).shape={self.attn(torch.cat(tensors=(embedded[0], hidden[0]), dim=1)).shape}\t\t"+
+
+        #print(f"self.attn(...).shape={self.attn(torch.cat(tensors=(embedded[0], hidden[0]), dim=1)).shape}\t\t"+
         #       f"softmax(...).shape="+
         #       f"{softmax(self.attn(torch.cat(tensors=(embedded[0], hidden[0]), dim=1)), dim=1).shape}")
-
-        # embedded.shape:                      [1, 1, decoder_hidden_size]
-        # embedded[0].shape:                      [1, decoder_hidden_size]
+        # embedded.shape:                      [1, 1, decoder_embedding_size]
+        # embedded[0].shape:                      [1, decoder_embedding_size]
         #
         # hidden.shape:                        [1, 1, decoder_hidden_size]
         # hidden[0].shape:                        [1, decoder_hidden_size]
@@ -284,17 +302,22 @@ class AttnDecoderRNN(nn.Module):
         # softmax(self.attn(...)).shape:                             [1, decoder_max_len]
         attn_weights = softmax(self.attn(torch.cat(tensors=(embedded[0], hidden[0]), dim=1)), dim=1)
 
-        # print(f"attn_weights.shape={attn_weights.shape}\t\t"+
+        #print(f"attn_weights.shape={attn_weights.shape}\t\t"+
         #       f"encoder_outputs.shape={encoder_outputs.shape}")
+
+
+        #import sys;
+
+        #sys.exit()
 
         # print(f"attn_weights.unsqueeze(0).shape={attn_weights.unsqueeze(0).shape}\t\t"+
         #       f"encoder_outputs.unsqueeze(0).shape={encoder_outputs.unsqueeze(0).shape}")
 
         # attn_weights.shape:                  [1, decoder_max_len]
-        # encoder_outputs.shape:                  [decoder_max_len, decoder_hidden_size]
+        # encoder_outputs.shape:                  [decoder_max_len, encoder_hidden_size]
         #
         # attn_weights.unsqueeze(0).shape:     [1, 1, decoder_max_len]
-        # encoder_outputs.unsqueeze(0).shape:     [1, decoder_max_len, decoder_hidden_size]
+        # encoder_outputs.unsqueeze(0).shape:     [1, decoder_max_len, encoder_hidden_size]
         attn_applied = torch.bmm(attn_weights.unsqueeze(0), encoder_outputs.unsqueeze(0))
 
         # print(f"attn_applied.shape={attn_applied.shape}\t\t"+
@@ -303,16 +326,18 @@ class AttnDecoderRNN(nn.Module):
         #       f"torch.cat(...).shape={torch.cat((embedded[0], attn_applied[0]), 1).shape}")
 
         # embedded.shape:                                  [1, batch_size=1, decoder_embedding_size]
-        # attn_applied.shape:                              [1, batch_size=1, decoder_hidden_size]
+        # attn_applied.shape:                              [1, batch_size=1, encoder_hidden_size]
         #
         # embedded[0].shape:                                  [batch_size=1, decoder_embedding_size]
-        # attn_applied[0].shape:                              [batch_size=1, decoder_hidden_size]
+        # attn_applied[0].shape:                              [batch_size=1, encoder_hidden_size]
         #
-        # torch.cat((embedded[0], attn_applied[0]), 1).shape: [batch_size=1, decoder_embedding_size+decoder_hidden_size]
+        # torch.cat((embedded[0], attn_applied[0]), 1).shape: [batch_size=1, decoder_embedding_size+encoder_hidden_size]
         #
         output = torch.cat((embedded[0], attn_applied[0]), 1)
 
-        # output.shape:                                      [batch_size=1, decoder_hidden_size+decoder_embedding_size]
+        # print(f"output.shape={output.shape}")
+
+        # output.shape:                                      [batch_size=1, encoder_hidden_size+decoder_embedding_size]
         # self.attn_combine(output).shape:                   [batch_size=1, decoder_hidden_size]
         # self.attn_combine(output).unsqueeze(0): [seq_len=1, batch_size=1, decoder_hidden_size]
         #
@@ -344,32 +369,35 @@ class AttnDecoderRNN(nn.Module):
         #
         return output, hidden, attn_weights
 
-    def init_hidden(self, *, device):
-        return torch.zeros(1, 1, self.hidden_size, device=device)
+    def init_hidden(self, *, batch_size: int, device: torch.device) -> torch.Tensor:
+        return torch.zeros(self.gru.num_layers, batch_size, self.decoder_hidden_size, device=device)
 
 
 def train(*,
-          input_tensor: torch.Tensor,  # shape: [seq_len, 1]
-          target_tensor: torch.Tensor, # shape: [seq_len, 1]
+          input_tensor: torch.Tensor,  # shape: [src_seq_len, batch_size]
+          target_tensor: torch.Tensor,  # shape: [tgt_seq_len, batch_size]
           encoder: EncoderRNN,
           decoder: AttnDecoderRNN,
           encoder_optimizer: Optimizer,
           decoder_optimizer: Optimizer,
           criterion: nn.Module,
           device: torch.device,
-          max_length: int,
+          max_src_length: int,
           batch_size: int,
           teacher_forcing_ratio: float) -> float:
 
-    encoder_hidden = encoder.init_hidden(device=device)  # shape: [1, 1, hidden_size]
+    encoder_hidden = encoder.init_hidden(batch_size=batch_size,
+                                         device=device)         # shape: [num_layers, batch_size, hidden_size]
 
     encoder_optimizer.zero_grad()
     decoder_optimizer.zero_grad()
 
-    src_seq_len = input_tensor.size(0)    # This assumes that dimension 0 is src_seq_len
-    tgt_seq_len = target_tensor.size(0)  # This assumes that dimension 1 is tgt_seq_len
+    src_seq_len = input_tensor.size(0)   # This assumes that dimension 0 is src_seq_len
+    tgt_seq_len = target_tensor.size(0)  # This assumes that dimension 0 is tgt_seq_len
 
-    encoder_outputs = torch.zeros(max_length, encoder.hidden_size, device=device)  # shape: [max_seq_len, hidden_size]
+    encoder_outputs = torch.zeros(max_src_length,
+                                  encoder.hidden_size,
+                                  device=device)        # shape: [max_src_len, hidden_size]
 
     loss: torch.Tensor = torch.tensor(0, dtype=torch.float)  # shape: [] meaning this is a scalar
 
@@ -392,9 +420,11 @@ def train(*,
     decoder_input = torch.tensor([[Vocab.start_of_sequence]], device=device)  # shape: [seq_len=1, batch=1]
 
     # encoder_hidden.shape is [num_layers * num_directions = 1, batch=1, hidden_size=256]
-    decoder_hidden = encoder_hidden
+    # decoder_hidden = encoder_hidden   # <--- Original tutorial
+    decoder_hidden = decoder.init_hidden(batch_size=batch_size, device=device)
 
-    use_teacher_forcing = True if random.random() < teacher_forcing_ratio else False
+    # use_teacher_forcing = True if random.random() < teacher_forcing_ratio else False
+    use_teacher_forcing = True
 
     if use_teacher_forcing:
 
@@ -403,7 +433,8 @@ def train(*,
             decoder_output, decoder_hidden, decoder_attention = decoder(
                 decoder_input, decoder_hidden, encoder_outputs)
             loss += criterion(decoder_output, target_tensor[di])
-            decoder_input = target_tensor[di]  # Teacher forcing
+            #print(f"target_tensor.shape={target_tensor.shape}\t\ttarget_tensor[di={di}].shape={target_tensor[di].shape}\n{target_tensor}\n{target_tensor[di]}")
+            decoder_input = target_tensor[di].unsqueeze(dim=1)  # Teacher forcing
 
     else:
         # Without teacher forcing: use its own predictions as the next input
@@ -411,8 +442,9 @@ def train(*,
             decoder_output, decoder_hidden, decoder_attention = decoder(
                 decoder_input, decoder_hidden, encoder_outputs)
             topv, topi = decoder_output.topk(1)
-            decoder_input = topi.squeeze().detach()  # detach from history as input
-
+            # decoder_input = topi.squeeze().detach()  # detach from history as input  # <--- Original code
+            decoder_input = topi.detach()  # detach from history as input
+            # print(f"decoder_output.shape={decoder_output.shape}\t\ttopi.shape={topi.shape}\t\tdecoder_input.shape={decoder_input.shape}\t\tdecoder_input={decoder_input}")
             loss += criterion(decoder_output, target_tensor[di])
             if decoder_input.item() == Vocab.end_of_sequence:
                 break
@@ -466,8 +498,8 @@ def train_iters(*,
     for iteration in range(1, n_iters + 1):  # type: int
 
         training_pair: ParallelTensor = training_pairs[iteration - 1]
-        input_tensor: torch.Tensor = training_pair.source   # shape: [seq_len, 1]
-        target_tensor: torch.Tensor = training_pair.target  # shape: [seq_len, 1]
+        input_tensor: torch.Tensor = training_pair.source   # shape: [seq_len, batch_size=1]
+        target_tensor: torch.Tensor = training_pair.target  # shape: [seq_len, batch_size=1]
 
         loss: float = train(input_tensor=input_tensor,
                             target_tensor=target_tensor,
@@ -477,7 +509,7 @@ def train_iters(*,
                             decoder_optimizer=decoder_optimizer,
                             criterion=criterion,
                             device=device,
-                            max_length=max_length,
+                            max_src_length=max_length,
                             batch_size=batch_size,
                             teacher_forcing_ratio=teacher_forcing_ratio)
 
@@ -521,7 +553,8 @@ def evaluate(*,
 
         decoder_input: torch.Tensor = torch.tensor([[Vocab.start_of_sequence]], device=device)  # SOS
 
-        decoder_hidden: torch.Tensor = encoder_hidden
+        # decoder_hidden: torch.Tensor = encoder_hidden  # <-- Original tutorial
+        decoder_hidden: torch.Tensor = decoder.init_hidden(batch_size=1, device=device)
 
         decoded_words: List[str] = []
         decoder_attentions: torch.Tensor = torch.zeros(max_length, max_length)
@@ -537,8 +570,8 @@ def evaluate(*,
                 break
             else:
                 decoded_words.append(target_vocab.index2word[topi.item()])
-
-            decoder_input = topi.squeeze().detach()
+            # print(f"topi={topi}\t\ttopi.shape={topi.shape}\t\t{topi.squeeze().shape}")
+            decoder_input = topi.detach()
 
         return decoded_words, decoder_attentions[:di + 1]
 
@@ -641,7 +674,10 @@ def run_training():
                                       hidden_size=256,
                                       num_hidden_layers=1).to(device=device)
 
-    attn_decoder1 = AttnDecoderRNN(hidden_size=256,
+    attn_decoder1 = AttnDecoderRNN(embedding_size=190,
+                                   decoder_hidden_size=7,
+                                   encoder_hidden_size=encoder1.hidden_size,
+                                   num_hidden_layers=1,
                                    output_size=data.target_vocab.n_words,
                                    dropout_p=0.1,
                                    max_length=max_length).to(device=device)
@@ -651,37 +687,40 @@ def run_training():
                 decoder=attn_decoder1,
                 device=device,
                 max_length=max_length,
-                n_iters=100,
+                n_iters=1,
                 batch_size=1,
                 print_every=25,
                 plot_every=100,
                 learning_rate=0.01,
                 teacher_forcing_ratio=teacher_forcing_ratio)
 
-    evaluate_randomly(data=data, encoder=encoder1, decoder=attn_decoder1, n=10, device=device, max_length=max_length)
+    if True:
 
-    output_words, attentions = evaluate(encoder=encoder1,
+        evaluate_randomly(data=data, encoder=encoder1, decoder=attn_decoder1, n=10, device=device,
+                          max_length=max_length)
+
+        output_words, attentions = evaluate(encoder=encoder1,
+                                            decoder=attn_decoder1,
+                                            sentence="je suis trop froid .",
+                                            source_vocab=data.source_vocab,
+                                            target_vocab=data.target_vocab,
+                                            device=device,
+                                            max_length=max_length)
+
+        plt.matshow(attentions.numpy())
+
+        for sentence in ["elle a cinq ans de moins que moi .",
+                         "elle est trop petit .",
+                         "je ne crains pas de mourir .",
+                         "c est un jeune directeur plein de talent ."]:
+
+            evaluate_and_show_attention(sentence=sentence,
+                                        encoder=encoder1,
                                         decoder=attn_decoder1,
-                                        sentence="je suis trop froid .",
                                         source_vocab=data.source_vocab,
                                         target_vocab=data.target_vocab,
                                         device=device,
                                         max_length=max_length)
-
-    plt.matshow(attentions.numpy())
-
-    for sentence in ["elle a cinq ans de moins que moi .",
-                     "elle est trop petit .",
-                     "je ne crains pas de mourir .",
-                     "c est un jeune directeur plein de talent ."]:
-
-        evaluate_and_show_attention(sentence=sentence,
-                                    encoder=encoder1,
-                                    decoder=attn_decoder1,
-                                    source_vocab=data.source_vocab,
-                                    target_vocab=data.target_vocab,
-                                    device=device,
-                                    max_length=max_length)
 
 
 if __name__ == "__main__":
