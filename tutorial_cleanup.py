@@ -78,10 +78,11 @@ class Vocab:
 
     def tensor_from_sentence(self, sentence: List[str], max_len: int, device: torch.device) -> torch.LongTensor:
         indexes: List[int] = [self[word] for word in sentence]  # self.indexes_from_sentence(sentence)
-        indexes.append(Vocab.end_of_sequence)
+        # indexes.append(Vocab.end_of_sequence)
         while len(indexes) < max_len:
             indexes.append(Vocab.pad)
         result = torch.LongTensor(indexes, device=device)  # shape: [seq_len]
+        # verify_shape(tensor=result, expected=[max_len])
         # result = result.view(-1, 1)  # shape: [seq_len, 1]
         #print(f"{result.shape}")
         # sys.exit()
@@ -137,16 +138,16 @@ class Data:
 
 class ParallelData(torch.utils.data.Dataset):
     def __init__(self, data: Data, device: torch.device):
-        print(repr(data))
+        #print(repr(data))
         if len(data.pairs) == 0:
             raise ValueError(f"Cannot create parallel data containing zero examples.")
         self.strings: Data = data
         self.source_vocab: Vocab = data.source_vocab
         self.target_vocab: Vocab = data.target_vocab
-        print(f"data.length={len(data.pairs)}")
+        # print(f"data.length={len(data.pairs)}")
         self.max_src_length: int = 1 + max([len(pair.source) for pair in data.pairs])
         self.max_tgt_length: int = 1 + max([len(pair.target) for pair in data.pairs])
-        print(f"self.max_src_length={self.max_src_length}\t\tself.max_tgt_length={self.max_tgt_length}")
+        # print(f"self.max_src_length={self.max_src_length}\t\tself.max_tgt_length={self.max_tgt_length}")
         self.pairs: List[ParallelTensor] = [pair.tensors(source_vocab=data.source_vocab,
                                                          target_vocab=data.target_vocab,
                                                          max_src_length=self.max_src_length,
@@ -155,8 +156,8 @@ class ParallelData(torch.utils.data.Dataset):
                                             for pair in data.pairs]
 
     def __getitem__(self, index: int) -> Mapping[str, torch.Tensor]:
-        print(f"data -> {self.pairs[index].source.shape}\t\t" +
-              f"labels -> {self.pairs[index].target.shape}")
+        # print(f"data -> {self.pairs[index].source.shape}\t\t" +
+        #      f"labels -> {self.pairs[index].target.shape}")
         return {"data":   self.pairs[index].source,
                 "labels": self.pairs[index].target}
 
@@ -199,8 +200,17 @@ def read_data(lang1: str, lang2: str, reverse: bool = False) -> Data:
         input_vocab = Vocab(lang1)
         output_vocab = Vocab(lang2)
 
-    pairs: List[ParallelSentence] = [ParallelSentence(source_sentence=parallel_line[0].split(),
-                                                      target_sentence=parallel_line[1].split())
+    pairs: List[ParallelSentence] = [ParallelSentence(source_sentence=(input_vocab.index2word[Vocab.start_of_sequence] +
+                                                                       " " + parallel_line[0] + " " +
+                                                                       input_vocab.index2word[Vocab.end_of_sequence]
+                                                                       ).split(),
+                                                      target_sentence=(output_vocab.index2word[
+                                                                           Vocab.start_of_sequence
+                                                                       ] + " " + parallel_line[1] + " " +
+                                                                       output_vocab.index2word[
+                                                                           Vocab.end_of_sequence
+                                                                       ]
+                                                                       ).split())
                                      for parallel_line in parallel_data]
 
     return Data(source_vocab=input_vocab, target_vocab=output_vocab, pairs=pairs)
@@ -209,7 +219,7 @@ def read_data(lang1: str, lang2: str, reverse: bool = False) -> Data:
 def filter_pair(*, pair: ParallelSentence, max_length: int, prefixes: Tuple[str, ...]) -> bool:
     return len(pair.source) < max_length and \
         len(pair.target) < max_length and \
-           (' '.join(pair.target)).startswith(prefixes)
+           (' '.join(pair.target[1:])).startswith(prefixes)
 
 
 def filter_pairs(*,
@@ -231,11 +241,11 @@ def prepare_data(*,
     print("Read %s sentence pairs" % len(data))
     pairs: List[ParallelSentence] = filter_pairs(pairs=data.pairs, max_length=max_length, prefixes=prefixes)
     print("Trimmed to %s sentence pairs" % len(pairs))
-    print("Counting words...")
+    print("Initializing vocabularies...")
     for pair in data:
         data.source_vocab.add_sentence(pair.source)
         data.target_vocab.add_sentence(pair.target)
-    print("Counted words:")
+    print("Vocabulary sizes:")
     print(data.source_vocab.name, data.source_vocab.n_words)
     print(data.target_vocab.name, data.target_vocab.n_words)
     return Data(source_vocab=data.source_vocab, target_vocab=data.target_vocab, pairs=pairs)
@@ -305,11 +315,18 @@ class AttnDecoderRNN(nn.Module):
                 input_tensor: torch.Tensor,
                 hidden: torch.Tensor,
                 encoder_outputs: torch.Tensor,
+                actual_src_length: int,
                 batch_size: int):  # type: ignore[override]
 
+        if encoder_outputs.shape[0] != self.max_src_length:
+            raise ValueError("Encoder outputs provided to this method must have same length as self.max_src_length:" +
+                             f"\t{encoder_outputs.shape[0]} != {self.max_src_length}")
+
+        # actual_src_length: int = max(self.max_src_length, input_tensor.shape[0])
+        # print(f"self.max_src_length={self.max_src_length}\tinput_tensor.shape[0]={input_tensor.shape[0]}")
         verify_shape(tensor=input_tensor, expected=[1, batch_size])
         verify_shape(tensor=hidden, expected=[self.gru.num_layers, batch_size, self.gru.hidden_size])
-        verify_shape(tensor=encoder_outputs, expected=[self.max_src_length, batch_size, self.encoder_hidden_size])
+        verify_shape(tensor=encoder_outputs, expected=[actual_src_length, batch_size, self.encoder_hidden_size])
 
         # input_tensor.shape:    [1, 1]
         # hidden.shape:          [num_hidden_layers=1, batch_size=1, decoder_hidden_size]
@@ -369,15 +386,15 @@ class AttnDecoderRNN(nn.Module):
         # softmax(self.attn(...)).shape:                             [1, decoder_max_len]
         attn_weights = softmax(self.attn(attn_input), dim=1)
 
-        verify_shape(tensor=attn_weights, expected=[batch_size, self.max_src_length])
-        verify_shape(tensor=encoder_outputs, expected=[self.max_src_length, batch_size, self.encoder_hidden_size])
+        verify_shape(tensor=attn_weights, expected=[batch_size, actual_src_length])
+        verify_shape(tensor=encoder_outputs, expected=[actual_src_length, batch_size, self.encoder_hidden_size])
 
         # Permute dimensions to prepare for batched matrix-matrix multiply
         encoder_outputs = encoder_outputs.permute(1, 2, 0)
         attn_weights = attn_weights.unsqueeze(2)
 
-        verify_shape(tensor=encoder_outputs, expected=[batch_size, self.encoder_hidden_size, self.max_src_length])
-        verify_shape(tensor=attn_weights, expected=[batch_size, self.max_src_length, 1])
+        verify_shape(tensor=encoder_outputs, expected=[batch_size, self.encoder_hidden_size, actual_src_length])
+        verify_shape(tensor=attn_weights, expected=[batch_size, actual_src_length, 1])
 
         #print(f"attn_weights.shape={attn_weights.shape}\t\t"+
         #       f"encoder_outputs.shape={encoder_outputs.shape}")
@@ -474,12 +491,12 @@ class AttnDecoderRNN(nn.Module):
 
         output = log_softmax(self.out(output), dim=1)
 
-        verify_shape(tensor=attn_weights, expected=[batch_size, self.max_src_length, 1])
+        verify_shape(tensor=attn_weights, expected=[batch_size, actual_src_length, 1])
         attn_weights = attn_weights.squeeze(dim=2)
 
         verify_shape(tensor=output, expected=[batch_size, self.output_size])
         verify_shape(tensor=hidden, expected=[self.gru.num_layers, batch_size, self.decoder_hidden_size])
-        verify_shape(tensor=attn_weights, expected=[batch_size, self.max_src_length])
+        verify_shape(tensor=attn_weights, expected=[batch_size, actual_src_length])
 
         # print(f"output.shape={output.shape}\t\thidden.shape={hidden.shape}\t\toutput[0].shape={output[0].shape}")
 
@@ -574,7 +591,7 @@ def train(*,
     verify_shape(tensor=decoder_hidden, expected=[decoder.gru.num_layers, batch_size, decoder.gru.hidden_size])
 
     use_teacher_forcing = True if random.random() < teacher_forcing_ratio else False
-    use_teacher_forcing = True
+    use_teacher_forcing = False
 
     if use_teacher_forcing:
 
@@ -585,7 +602,7 @@ def train(*,
             verify_shape(tensor=decoder_hidden, expected=[decoder.gru.num_layers, batch_size, decoder.gru.hidden_size])
 
             decoder_output, decoder_hidden, decoder_attention = decoder(
-                decoder_input, decoder_hidden, encoder_outputs, batch_size)
+                decoder_input, decoder_hidden, encoder_outputs, max_src_length, batch_size)
 
             # output.shape:                           [batch_size=1, decoder_output_size]
             # hidden.shape:             [num_layers=1, batch_size=1, decoder_hidden_size]
@@ -602,15 +619,25 @@ def train(*,
     else:
         # Without teacher forcing: use its own predictions as the next input
         for di in range(max_tgt_length):
+
+            verify_shape(tensor=decoder_input, expected=[1, batch_size])
+            verify_shape(tensor=decoder_hidden, expected=[decoder.gru.num_layers, batch_size, decoder.gru.hidden_size])
+
             decoder_output, decoder_hidden, decoder_attention = decoder(
-                decoder_input, decoder_hidden, encoder_outputs)
+                decoder_input, decoder_hidden, encoder_outputs, max_src_length, batch_size)
+
+            verify_shape(tensor=decoder_output, expected=[batch_size, decoder.output_size])
+            verify_shape(tensor=decoder_hidden, expected=[decoder.gru.num_layers, batch_size, decoder.gru.hidden_size])
+            verify_shape(tensor=decoder_attention, expected=[batch_size, max_src_length])
+
             topv, topi = decoder_output.topk(1)
+            # print(topi.shape)
             # decoder_input = topi.squeeze().detach()  # detach from history as input  # <--- Original code
-            decoder_input = topi.detach()  # detach from history as input
+            decoder_input = topi.detach().permute(1, 0)  # detach from history as input
             # print(f"decoder_output.shape={decoder_output.shape}\t\ttopi.shape={topi.shape}\t\tdecoder_input.shape={decoder_input.shape}\t\tdecoder_input={decoder_input}")
             loss += criterion(decoder_output, target_tensor[di])
-            if decoder_input.item() == Vocab.end_of_sequence:
-                break
+            #if decoder_input.item() == Vocab.end_of_sequence:
+            #    break
 
     loss.backward()
 
@@ -661,8 +688,8 @@ def train_iters(*, #data: Data,
 
     criterion: nn.NLLLoss = nn.NLLLoss()
 
-    for pair in parallel_data:
-        print(f"src={len(pair['data'])}\ttgt={len(pair['labels'])}")
+    #for pair in parallel_data:
+    #    print(f"src={len(pair['data'])}\ttgt={len(pair['labels'])}")
 
     for iteration in range(1, n_iters + 1):  # type: int
 
@@ -671,13 +698,15 @@ def train_iters(*, #data: Data,
         # target_tensor: torch.Tensor = training_pair.target  # shape: [seq_len, batch_size=1]
 
         for batch in data:
-            print(f"batch['data'].shape={batch['data'].shape}\tbatch['labels'].shape{batch['labels'].shape}")
+            # print(f"batch['data'].shape={batch['data'].shape}\tbatch['labels'].shape{batch['labels'].shape}")
            # sys.exit()
             input_tensor: torch.Tensor = batch["data"].permute(1, 0)
             target_tensor: torch.Tensor = batch["labels"].permute(1, 0)
 
-            verify_shape(tensor=input_tensor, expected=[parallel_data.max_src_length, batch_size])
-            verify_shape(tensor=target_tensor, expected=[parallel_data.max_tgt_length, batch_size])
+            actual_batch_size: int = min(batch_size, input_tensor.shape[1])
+
+            verify_shape(tensor=input_tensor, expected=[parallel_data.max_src_length, actual_batch_size])
+            verify_shape(tensor=target_tensor, expected=[parallel_data.max_tgt_length, actual_batch_size])
 
             # print(f"input_tensor.shape={input_tensor.shape}\t\ttarget_tensor.shape={target_tensor.shape}")
             # sys.exit()
@@ -692,7 +721,7 @@ def train_iters(*, #data: Data,
                                 device=device,
                                 max_src_length=max_src_length,
                                 max_tgt_length=max_tgt_length,
-                                batch_size=batch_size,
+                                batch_size=actual_batch_size,
                                 teacher_forcing_ratio=teacher_forcing_ratio)
 
             print_loss_total += loss
@@ -719,28 +748,32 @@ def evaluate(*,
              source_vocab: Vocab,
              target_vocab: Vocab,
              device: torch.device,
-             max_src_length: int,
              max_tgt_length: int):
+
+    if len(sentence) > decoder.max_src_length:
+        raise ValueError(f"Input sentence length must not exceed {decoder.max_src_length}, but does:\t{len(sentence)}")
 
     with torch.no_grad():
 
         batch_size: int = 1
+        actual_src_length: int = max(decoder.max_src_length, len(sentence))
         input_tensor: torch.Tensor = source_vocab.tensor_from_sentence(sentence=sentence,
-                                                                       max_len=max_src_length,
+                                                                       max_len=actual_src_length,
                                                                        device=device).unsqueeze(dim=1)
 
-        print(f"sentence={sentence}\tmax_src_length={max_src_length}\tinput_tensor length={input_tensor.shape}")
+        # print(f"sentence={sentence}\tmax_src_length={decoder.max_src_length}\tinput_tensor length={input_tensor.shape}")
 
         encoder_hidden: torch.Tensor = encoder.init_hidden(device=device)
 
-        encoder_outputs: torch.Tensor = torch.zeros(max_src_length, batch_size, encoder.hidden_size, device=device)
+        encoder_outputs: torch.Tensor = torch.zeros(actual_src_length, batch_size, encoder.hidden_size,
+                                                    device=device)
 
         #sys.exit()
-        verify_shape(tensor=input_tensor, expected=[max_src_length, batch_size])
+        verify_shape(tensor=input_tensor, expected=[actual_src_length, batch_size])
         verify_shape(tensor=encoder_hidden, expected=[encoder.num_hidden_layers, batch_size, encoder.hidden_size])
-        verify_shape(tensor=encoder_outputs, expected=[max_src_length, batch_size, encoder.hidden_size])
+        verify_shape(tensor=encoder_outputs, expected=[actual_src_length, batch_size, encoder.hidden_size])
 
-        for src_index in range(max_src_length):  # type: int
+        for src_index in range(actual_src_length):  # type: int
             encoder_output, encoder_hidden = encoder(input_tensor[src_index], encoder_hidden)
 
             verify_shape(tensor=encoder_hidden, expected=[encoder.num_hidden_layers, batch_size, encoder.hidden_size])
@@ -758,12 +791,12 @@ def evaluate(*,
         verify_shape(tensor=decoder_hidden, expected=[decoder.gru.num_layers, batch_size, decoder.gru.hidden_size])
 
         decoded_words: List[str] = []
-        decoder_attentions: torch.Tensor = torch.zeros(max_src_length, max_src_length)
+        decoder_attentions: torch.Tensor = torch.zeros(max_tgt_length, actual_src_length)
 
         target_index: int = 0
         for target_index in range(max_tgt_length):
             decoder_output, decoder_hidden, decoder_attention = decoder(
-                decoder_input, decoder_hidden, encoder_outputs, batch_size)
+                decoder_input, decoder_hidden, encoder_outputs, actual_src_length, batch_size)
             decoder_attentions[target_index] = decoder_attention.data
             topv, topi = decoder_output.data.topk(1)
             if topi.item() == Vocab.end_of_sequence:
@@ -794,12 +827,11 @@ def evaluate_randomly(*,
                                             source_vocab=data.source_vocab,
                                             target_vocab=data.target_vocab,
                                             device=device,
-                                            max_src_length=data.max_src_length+1,
-                                            max_tgt_length=data.max_tgt_length+1)
+                                            max_tgt_length=data.max_tgt_length)
         output_sentence = ' '.join(output_words)
 
-        print('>', pair.source)
-        print('=', pair.target)
+        print('>', ' '.join(pair.source))
+        print('=', ' '.join(pair.target))
         print('<', output_sentence)
         print('')
 
@@ -830,7 +862,6 @@ def evaluate_and_show_attention(*,
                                 source_vocab: Vocab,
                                 target_vocab: Vocab,
                                 device: torch.device,
-                                max_src_length: int,
                                 max_tgt_length: int):
 
     output_words, attentions = evaluate(encoder=encoder,
@@ -839,7 +870,6 @@ def evaluate_and_show_attention(*,
                                         source_vocab=source_vocab,
                                         target_vocab=target_vocab,
                                         device=device,
-                                        max_src_length=max_src_length,
                                         max_tgt_length=max_tgt_length)
     print('input =', sentence)
     print('output =', ' '.join(output_words))
@@ -874,6 +904,9 @@ def run_training():
 
     parallel_data = ParallelData(data, device)
 
+    # print(parallel_data.max_src_length)
+    # print(parallel_data.max_tgt_length)
+    # sys.exit()
     encoder1: EncoderRNN = EncoderRNN(input_size=data.source_vocab.n_words,
                                       embedding_size=200,
                                       hidden_size=256,
@@ -885,16 +918,16 @@ def run_training():
                                    num_hidden_layers=1,
                                    output_size=data.target_vocab.n_words,
                                    dropout_p=0.1,
-                                   max_src_length=parallel_data.max_src_length+1).to(device=device)
+                                   max_src_length=parallel_data.max_src_length).to(device=device)
 
     train_iters(parallel_data=parallel_data,
                 encoder=encoder1,
                 decoder=attn_decoder1,
                 device=device,
-                max_src_length=parallel_data.max_src_length+1,
-                max_tgt_length=parallel_data.max_tgt_length+1,
+                max_src_length=parallel_data.max_src_length,
+                max_tgt_length=parallel_data.max_tgt_length,
                 n_iters=1,
-                batch_size=2,
+                batch_size=5,
                 print_every=25,
                 plot_every=100,
                 learning_rate=0.01,
@@ -904,30 +937,38 @@ def run_training():
 
         evaluate_randomly(data=parallel_data, encoder=encoder1, decoder=attn_decoder1, n=10, device=device)
 
+        start_of_sequence: str = parallel_data.source_vocab.index2word[Vocab.start_of_sequence]
+        end_of_sequence: str = parallel_data.source_vocab.index2word[Vocab.end_of_sequence]
+
+        sample_sentences: List[List[str]] = [f"{start_of_sequence} {string} {end_of_sequence}".split()
+                                             for string in
+                                             ["je suis trop froid .",
+                                              # "elle a cinq ans de moins que moi .",
+                                              "elle est trop petit .",
+                                              # "je ne crains pas de mourir .",
+                                              # "c est un jeune directeur plein de talent ."
+                                              ]
+                                             ]
+
         output_words, attentions = evaluate(encoder=encoder1,
                                             decoder=attn_decoder1,
-                                            sentence="je suis trop froid .".split(),
+                                            sentence=sample_sentences[0],
                                             source_vocab=parallel_data.source_vocab,
                                             target_vocab=parallel_data.target_vocab,
                                             device=device,
-                                            max_src_length=parallel_data.max_src_length+1,
-                                            max_tgt_length=parallel_data.max_tgt_length+1)
+                                            max_tgt_length=parallel_data.max_tgt_length)
 
         plt.matshow(attentions.numpy())
 
-        for sentence in ["elle a cinq ans de moins que moi .",
-                         "elle est trop petit .",
-                         "je ne crains pas de mourir .",
-                         "c est un jeune directeur plein de talent ."]:
+        for sentence in sample_sentences[1:]:
 
-            evaluate_and_show_attention(sentence=sentence.split(),
+            evaluate_and_show_attention(sentence=sentence,
                                         encoder=encoder1,
                                         decoder=attn_decoder1,
                                         source_vocab=data.source_vocab,
                                         target_vocab=data.target_vocab,
                                         device=device,
-                                        max_src_length=parallel_data.max_src_length+1,
-                                        max_tgt_length=parallel_data.max_tgt_length+1)
+                                        max_tgt_length=parallel_data.max_tgt_length)
 
 
 if __name__ == "__main__":
