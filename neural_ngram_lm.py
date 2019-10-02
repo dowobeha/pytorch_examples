@@ -79,15 +79,10 @@ class BigramLM(nn.Module):
         self.output_layer = nn.Linear(hidden_size, vocab_size)
 
     def forward(self, input_tensor: torch.Tensor) -> torch.Tensor:
-        # print(f"input\t{input_tensor.shape}")
         embedded = self.embedding(input_tensor)
-        # print(f"embedded\t{embedded.shape}")
         hidden = relu(self.hidden_layer(embedded))
-        # print(f"hidden\t{hidden.shape}")
         output = self.output_layer(hidden)
-        # print(f"output\t{output.shape}")
         log_probs = log_softmax(output, dim=-1)
-        # print(f"log_probs\t{log_probs.shape}")
         return log_probs
 
 
@@ -103,8 +98,7 @@ def training_iteration(*,
     loss: torch.Tensor = torch.tensor(0, dtype=torch.float, device=device)  # shape: [] meaning this is a scalar
 
     predicted_distribution: torch.Tensor = model(example)
-    # print(predicted_distribution.shape)
-    # print(label.shape)
+
     loss += nll_loss(input=predicted_distribution, target=label, reduction='sum')
 
     loss.backward()
@@ -122,7 +116,7 @@ def train_lm(*,
              learning_rate: float) -> BigramLM:
 
     data = BigramData(filename=filename, device=device)
-    # print(f"vocab\t{len(data.vocab)}")
+
     bigram_model = BigramLM(vocab_size=len(data.vocab), embedding_size=64, hidden_size=128)
 
     sgd = SGD(bigram_model.parameters(), lr=learning_rate)
@@ -135,8 +129,6 @@ def train_lm(*,
 
             batched_example = batch["token"].squeeze(dim=1)
             batched_label = batch["next_token"].squeeze(dim=1)
-
-            # print(f"example.shape={batched_example.shape}\tlabel.shape={batched_label.shape}")
 
             loss += training_iteration(model=bigram_model,
                                              optimizer=sgd,
