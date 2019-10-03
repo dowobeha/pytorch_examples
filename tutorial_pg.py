@@ -66,19 +66,27 @@ class Word:
         self.label: str = Word.generate_label(characters)
 
     @staticmethod
-    def generate_label(characters: List[str]) -> str:
-        start = 0
+    def is_completely_alphabetic(characters: List[str]) -> bool:
+        from functools import reduce
+        return reduce(lambda a, b: a & b, [c.isalpha() for c in characters])
+
+    @staticmethod
+    def position_of_first_vowel(characters: List[str]) -> int:
         for position in range(len(characters)):
             char = characters[position]
             if char in "aeiouAEIOU":
-                start = position
-                break
-        #positions: List[int] = [characters.index(vowel) for vowel in "aeiouAEIOU"]
-        #positions: List[int] = [position for position in positions if position >= 0]
-        #start = min(positions, default=0)
-        prefix = characters[0:start]
-        suffix = characters[start:]
-        return suffix + ['-'] + prefix + ['a','y']
+                return position
+        return len(characters)
+
+    @staticmethod
+    def generate_label(characters: List[str]) -> str:
+        if Word.is_completely_alphabetic(characters):
+            first_vowel = Word.position_of_first_vowel(characters)
+            prefix = characters[0:first_vowel]
+            suffix = characters[first_vowel:]
+            return suffix + ['-'] + prefix + ['a','y']
+        else:
+            return characters
 
 
 class Corpus(Dataset):
@@ -674,6 +682,10 @@ def run_training():
     training_corpus = Corpus(name="training", filename="data/shakespeare.tiny", max_length=max_length, device=device)
     test_corpus = Corpus(name="test", filename="data/shakespeare.test", vocab=training_corpus.characters,
                          max_length=training_corpus.max_word_length, device=device)
+
+    #for word in test_corpus.words:
+    #    print(f"{''.join(word.characters)}\t{''.join(word.label)}")
+    #sys.exit()
 
     encoder1: EncoderRNN = EncoderRNN(input_size=len(training_corpus.characters),
                                       embedding_size=200,
