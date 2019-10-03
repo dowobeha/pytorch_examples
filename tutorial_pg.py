@@ -548,6 +548,7 @@ def train(*,
     decoder_hidden = decoder.init_hidden(batch_size=batch_size, device=device)
 
     verify_shape(tensor=decoder_input, expected=[1, batch_size])
+    verify_shape(tensor=target_tensor, expected=[max_tgt_length, batch_size])
     verify_shape(tensor=decoder_hidden, expected=[decoder.gru.num_layers, batch_size, decoder.gru.hidden_size])
 
     use_teacher_forcing = True if random.random() < teacher_forcing_ratio else False
@@ -559,7 +560,16 @@ def train(*,
                                              target_tensor=target_tensor if use_teacher_forcing else None)
     #print(f"input_tensor.shape={input_tensor.shape}\tdecoder_output.shape={decoder_output.shape}\ttarget_tensor.shape={target_tensor.shape}\tmax_tgt_length={max_tgt_length}")
 
-    loss += criterion(decoder_output.squeeze(dim=1), target_tensor.squeeze(dim=1))
+    # Our loss function requires predictions to be of the shape NxC, where N is the number of predictions and C is the number of possible predicted categories
+    predictions = decoder_output.reshape(-1, decoder.output_size)  # Reshaping from [seq_len, batch_size, decoder.output_size] to [seq_len*batch_size, decoder.output_size]
+    labels = target_tensor.reshape(-1)                             # Reshaping from [seq_len, batch_size]                      to [seq_len*batch_size]
+    loss += criterion(predictions, labels)
+    #print(f"\t{decoder_output.view(-1,decoder_output.shape[-1]).shape}")
+    #print(target_tensor.reshape(-1))
+#    print(f"\t{target_tensor.view(-1)}")
+    #sys.exit()
+    #loss += criterion(decoder_output.view(1,1,-1), target_tensor.view(-1))
+    # loss += criterion(decoder_output.squeeze(dim=1), target_tensor.squeeze(dim=1))
     # for index, decoder_output in enumerate(start=1,
     #                                        iterable=decoder.decode_sequence(encoder_outputs=encoder_outputs,
     #                                               start_of_sequence_symbol=start_of_sequence_symbol,
@@ -682,9 +692,9 @@ def run_training():
                 encoder=encoder1,
                 decoder=attn_decoder1,
                 device=device,
-                n_iters=1,
-                batch_size=1,
-                print_every=1,
+                n_iters=1000,
+                batch_size=100,
+                print_every=10,
                 learning_rate=0.01,
                 teacher_forcing_ratio=teacher_forcing_ratio)
 
