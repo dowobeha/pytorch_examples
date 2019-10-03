@@ -540,7 +540,7 @@ def train(*,
     encoder_optimizer.zero_grad()
     decoder_optimizer.zero_grad()
 
-    loss: torch.Tensor = torch.tensor(0, dtype=torch.float)  # shape: [] meaning this is a scalar
+    loss: torch.Tensor = torch.tensor(0, dtype=torch.float, device=device)  # shape: [] meaning this is a scalar
 
     encoder_outputs = encoder.encode_sequence(input_tensor)
 
