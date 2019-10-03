@@ -35,14 +35,14 @@ class Vocab:
         self.end_of_sequence_int: int = 3
         self.end_of_sequence_string: str = end_of_sequence
 
-        self.string2int: MutableMapping[str, int] = {self.pad_int: self.pad_string,
-                                                     self.oov_int: self.oov_string,
-                                                     self.start_of_sequence_int: self.start_of_sequence_string,
-                                                     self.end_of_sequence_int: self.end_of_sequence_string}
-        self.int2string: MutableMapping[int, str] = {self.pad_string: self.pad_int,
+        self.string2int: MutableMapping[str, int] = {self.pad_string: self.pad_int,
                                                      self.oov_string: self.oov_int,
-                                                     self.start_of_sequence_string: self.end_of_sequence_int,
+                                                     self.start_of_sequence_string: self.start_of_sequence_int,
                                                      self.end_of_sequence_string: self.end_of_sequence_int}
+        self.int2string: MutableMapping[int, str] = {self.pad_int: self.pad_string,
+                                                     self.oov_int: self.oov_string,
+                                                     self.start_of_sequence_int: self.end_of_sequence_string,
+                                                     self.end_of_sequence_int: self.end_of_sequence_string}
 
     def __getitem__(self, item: str) -> int:
         if item in self.string2int:
@@ -525,6 +525,7 @@ def evaluate(corpus: Corpus,
             _, top_i = decoder_output.topk(k=1)
 
             predictions = top_i.squeeze(dim=2).squeeze(dim=1).tolist()
+            #print(f"top_i.shape={top_i.shape}\t{predictions}")
             predicted_string = "".join([corpus.characters.int2string[i] for i in predictions])
 
             # print(f"decoder_output.shape={decoder_output.shape}\ttop_i.shape={top_i.shape}\tpredictions={predictions}\t{predicted_string}")
@@ -622,7 +623,7 @@ def train_iters(*,  #data: Data,
     #                                         for _ in range(n_iters)]
 
     criterion: nn.NLLLoss = nn.NLLLoss(ignore_index=corpus.characters.pad_int,
-                                       reduction='sum')
+                                       reduction='mean')
 
     #for pair in parallel_data:
     #    print(f"src={len(pair['data'])}\ttgt={len(pair['labels'])}")
@@ -679,7 +680,7 @@ def run_training():
 
     device: torch.device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
-    training_corpus = Corpus(name="training", filename="data/shakespeare.tiny", max_length=max_length, device=device)
+    training_corpus = Corpus(name="training", filename="data/shakespeare50k.txt", max_length=max_length, device=device)
     test_corpus = Corpus(name="test", filename="data/shakespeare.test", vocab=training_corpus.characters,
                          max_length=training_corpus.max_word_length, device=device)
 
@@ -704,9 +705,9 @@ def run_training():
                 encoder=encoder1,
                 decoder=attn_decoder1,
                 device=device,
-                n_iters=1000,
-                batch_size=100,
-                print_every=10,
+                n_iters=100,
+                batch_size=100000,
+                print_every=5,
                 learning_rate=0.01,
                 teacher_forcing_ratio=teacher_forcing_ratio)
 
