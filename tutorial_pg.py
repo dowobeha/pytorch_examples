@@ -41,7 +41,7 @@ class Vocab:
                                                      self.end_of_sequence_string: self.end_of_sequence_int}
         self.int2string: MutableMapping[int, str] = {self.pad_int: self.pad_string,
                                                      self.oov_int: self.oov_string,
-                                                     self.start_of_sequence_int: self.end_of_sequence_string,
+                                                     self.start_of_sequence_int: self.start_of_sequence_string,
                                                      self.end_of_sequence_int: self.end_of_sequence_string}
 
     def __getitem__(self, item: str) -> int:
@@ -63,8 +63,11 @@ class Vocab:
 class Word:
     def __init__(self, characters: List[str]):
         self.characters: List[str] = characters
-        self.label: str = Word.generate_label(characters)
+        self.label: List[str] = Word.generate_label(characters)
 
+    def __str__(self) -> str:
+        return f"{''.join(self.characters)}\t{''.join(self.label)}"
+        
     @staticmethod
     def is_completely_alphabetic(characters: List[str]) -> bool:
         from functools import reduce
@@ -87,7 +90,7 @@ class Word:
             return suffix + ['-'] + prefix + ['a','y']
         else:
             return characters
-
+        
 
 class Corpus(Dataset):
 
@@ -110,7 +113,7 @@ class Corpus(Dataset):
         self._max_label_length = Corpus.calculate_longest([word.label for word in self.words])
 
         self.word_tensor_length = self._max_word_length + 2
-        self.label_tensor_length = self._max_label_length + 2
+        self.label_tensor_length = self._max_label_length + 1
 
     def __len__(self) -> int:
         return len(self.words)
@@ -118,10 +121,12 @@ class Corpus(Dataset):
     def __getitem__(self, index: int) -> Mapping[str, torch.Tensor]:
 
         return {"data": self.create_tensor(sequence=self.words[index].characters,
-                                           pad_to_length=self._max_word_length),
+                                           pad_to_length=self._max_word_length,
+                                           include_start_of_sequence=True),
 
                 "labels": self.create_tensor(sequence=self.words[index].label,
-                                             pad_to_length=self._max_label_length),
+                                             pad_to_length=self._max_label_length,
+                                             include_start_of_sequence=False),
 
                 "start-of-sequence": torch.tensor(data=[self.characters.start_of_sequence_int],
                                                   dtype=torch.long,
@@ -129,14 +134,14 @@ class Corpus(Dataset):
 
                 "string": self.words[index].characters}
 
-    def create_tensor(self, *, sequence: List[str], pad_to_length: int) -> torch.Tensor:
+    def create_tensor(self, *, sequence: List[str], pad_to_length: int, include_start_of_sequence: bool) -> torch.Tensor:
 
-        start_of_sequence: List[int] = [self.characters.start_of_sequence_int]
+        start_of_sequence: List[int] = [self.characters.start_of_sequence_int] if include_start_of_sequence else []
         int_sequence: List[int] = [self.characters[s] for s in sequence]
         pads: List[int] = [self.characters.pad_int] * max(0, (pad_to_length - len(sequence)))
         end_of_sequence: List[int] = [self.characters.end_of_sequence_int]
 
-        result = torch.tensor(data=start_of_sequence + int_sequence + pads + end_of_sequence,
+        result = torch.tensor(data=start_of_sequence + int_sequence + end_of_sequence + pads,
                               dtype=torch.long,
                               device=self.device)
         return result
@@ -502,7 +507,7 @@ class AttnDecoderRNN(nn.Module):
 
         results: List[torch.Tensor] = list()
 
-        for index in range(1, max_length+1):
+        for index in range(max_length):
             verify_shape(tensor=decoder_input, expected=[1, batch_size])
             verify_shape(tensor=decoder_hidden,
                          expected=[self.gru.num_layers, batch_size, self.gru.hidden_size])
@@ -521,6 +526,7 @@ class AttnDecoderRNN(nn.Module):
                 _, top_i = decoder_output.topk(1)
                 decoder_input = top_i.detach().permute(1, 0)
             else:
+                # print(f"target_tensor.shape={target_tensor.shape}\tindex={index}\tmax_length={max_length}")
                 decoder_input = target_tensor[index].unsqueeze(dim=0)
 
         return torch.stack(tensors=results, dim=0)
@@ -590,13 +596,13 @@ def train(*,
     verify_shape(tensor=decoder_hidden, expected=[decoder.gru.num_layers, batch_size, decoder.gru.hidden_size])
 
     use_teacher_forcing = True if random.random() < teacher_forcing_ratio else False
-    use_teacher_forcing = False
+    # use_teacher_forcing = False
 
     decoder_output = decoder.decode_sequence(encoder_outputs=encoder_outputs,
                                              start_of_sequence_symbol=start_of_sequence_symbol,
                                              max_length=max_tgt_length,
                                              target_tensor=target_tensor if use_teacher_forcing else None)
-    #print(f"input_tensor.shape={input_tensor.shape}\tdecoder_output.shape={decoder_output.shape}\ttarget_tensor.shape={target_tensor.shape}\tmax_tgt_length={max_tgt_length}")
+    # print(f"input_tensor.shape={input_tensor.shape}\tdecoder_output.shape={decoder_output.shape}\ttarget_tensor.shape={target_tensor.shape}\tmax_tgt_length={max_tgt_length}")
 
     # Our loss function requires predictions to be of the shape NxC, where N is the number of predictions and C is the number of possible predicted categories
     predictions = decoder_output.reshape(-1, decoder.output_size)  # Reshaping from [seq_len, batch_size, decoder.output_size] to [seq_len*batch_size, decoder.output_size]
@@ -651,9 +657,8 @@ def train_iters(*,  #data: Data,
     #                                                                           device=device)
     #                                         for _ in range(n_iters)]
 
-    criterion: nn.NLLLoss = nn.NLLLoss(ignore_index=corpus.characters.pad_int,
-                                       reduction='mean')
-
+    criterion: nn.NLLLoss = nn.NLLLoss(reduction='mean') #ignore_index=corpus.characters.pad_int)
+                                       
     #for pair in parallel_data:
     #    print(f"src={len(pair['data'])}\ttgt={len(pair['labels'])}")
 
@@ -699,19 +704,24 @@ def train_iters(*,  #data: Data,
             print_loss_total = 0
             print('%s (%d %d%%) %.4f' % (time_since(since=start, percent=iteration/n_iters),
                                          iteration, iteration / n_iters * 100, print_loss_avg))
+            sys.stdout.flush()
 
 
 def run_training():
 
     max_length = 10
 
-    teacher_forcing_ratio = 0.0
+    teacher_forcing_ratio = 0.5
 
     device: torch.device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-    training_filename = "data/shakespeare50k.txt" if torch.cuda.is_available() else "data/shakespeare.tiny"
-
+#    training_filename = "data/shakespeare50k.txt" if torch.cuda.is_available() else "data/shakespeare.tiny"
+    test_filename="data/shakespeare.test"
+#    training_filename="data/a.train"
+#    test_filename="data/a.train"
+    training_filename="/usr/share/dict/words"
+    
     training_corpus = Corpus(name="training", filename=training_filename, max_length=max_length, device=device)
-    test_corpus = Corpus(name="test", filename="data/shakespeare.test", vocab=training_corpus.characters,
+    test_corpus = Corpus(name="test", filename=test_filename, vocab=training_corpus.characters,
                          max_length=training_corpus._max_word_length, device=device)
 
     #for word in test_corpus.words:
@@ -731,13 +741,18 @@ def run_training():
                                    dropout_p=0.1,
                                    max_src_length=training_corpus.word_tensor_length).to(device=device)
 
+#    for i in range(len(training_corpus)):
+#        print(str(training_corpus.words[i]) + "\t" + ''.join([training_corpus.characters.int2string[i] for i in training_corpus[i]["data"].tolist()]) + "\t" + ''.join([training_corpus.characters.int2string[i] for i in training_corpus[i]["labels"].tolist()]))
+#    print()
+#    print()
+    
     train_iters(corpus=training_corpus,
                 encoder=encoder1,
                 decoder=attn_decoder1,
                 device=device,
-                n_iters=100,
-                batch_size=100000,
-                print_every=5,
+                n_iters=1000,
+                batch_size=25000,
+                print_every=1,
                 learning_rate=0.01,
                 teacher_forcing_ratio=teacher_forcing_ratio)
 
