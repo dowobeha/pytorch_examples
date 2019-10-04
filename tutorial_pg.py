@@ -106,24 +106,22 @@ class Corpus(Dataset):
                 for character in word.label:
                     self.characters.add(character)
 
-        self.max_word_length = Corpus.calculate_longest([word.characters for word in self.words])
-        self.max_label_length = Corpus.calculate_longest([word.label for word in self.words])
+        self._max_word_length = Corpus.calculate_longest([word.characters for word in self.words])
+        self._max_label_length = Corpus.calculate_longest([word.label for word in self.words])
+
+        self.word_tensor_length = self._max_word_length + 2
+        self.label_tensor_length = self._max_label_length + 2
 
     def __len__(self) -> int:
         return len(self.words)
 
     def __getitem__(self, index: int) -> Mapping[str, torch.Tensor]:
 
-        # print(f"word[{index}].word = {self.words[index].word}")
-        return {"data": Corpus.create_tensor(vocab=self.characters,
-                                             sequence=self.words[index].characters,
-                                             pad_to_length=self.max_word_length,
-                                             device=self.device),
+        return {"data": self.create_tensor(sequence=self.words[index].characters,
+                                           pad_to_length=self._max_word_length),
 
-                "labels": Corpus.create_tensor(vocab=self.characters,
-                                              sequence=self.words[index].label,
-                                              pad_to_length=self.max_label_length,
-                                              device=self.device),
+                "labels": self.create_tensor(sequence=self.words[index].label,
+                                             pad_to_length=self._max_label_length),
 
                 "start-of-sequence": torch.tensor(data=[self.characters.start_of_sequence_int],
                                                   dtype=torch.long,
@@ -131,15 +129,46 @@ class Corpus(Dataset):
 
                 "string": self.words[index].characters}
 
-    @staticmethod
-    def create_tensor(*,
-                      vocab: Vocab,
-                      sequence: List[str],
-                      pad_to_length: int,
-                      device: torch.device):
-        pads: List[int] = [vocab.pad_int] * max(0, (pad_to_length - len(sequence)))
-        result = torch.tensor(data=[vocab[s] for s in sequence]+pads, dtype=torch.long, device=device)
+    def create_tensor(self, *, sequence: List[str], pad_to_length: int) -> torch.Tensor:
+
+        start_of_sequence: List[int] = [self.characters.start_of_sequence_int]
+        int_sequence: List[int] = [self.characters[s] for s in sequence]
+        pads: List[int] = [self.characters.pad_int] * max(0, (pad_to_length - len(sequence)))
+        end_of_sequence: List[int] = [self.characters.end_of_sequence_int]
+
+        result = torch.tensor(data=start_of_sequence + int_sequence + pads + end_of_sequence,
+                              dtype=torch.long,
+                              device=self.device)
         return result
+
+    # def __getitem__(self, index: int) -> Mapping[str, torch.Tensor]:
+    #
+    #     # print(f"word[{index}].word = {self.words[index].word}")
+    #     return {"data": Corpus.create_tensor(vocab=self.characters,
+    #                                          sequence=self.words[index].characters,
+    #                                          pad_to_length=self._max_word_length,
+    #                                          device=self.device),
+    #
+    #             "labels": Corpus.create_tensor(vocab=self.characters,
+    #                                           sequence=self.words[index].label,
+    #                                           pad_to_length=self._max_label_length,
+    #                                           device=self.device),
+    #
+    #             "start-of-sequence": torch.tensor(data=[self.characters.start_of_sequence_int],
+    #                                               dtype=torch.long,
+    #                                               device=self.device),
+    #
+    #             "string": self.words[index].characters}
+    #
+    # @staticmethod
+    # def create_tensor(*,
+    #                   vocab: Vocab,
+    #                   sequence: List[str],
+    #                   pad_to_length: int,
+    #                   device: torch.device):
+    #     pads: List[int] = [vocab.pad_int] * max(0, (pad_to_length - len(sequence)))
+    #     result = torch.tensor(data=[vocab[s] for s in sequence]+pads, dtype=torch.long, device=device)
+    #     return result
 
     @staticmethod
     def read_words(filename: str, max_length: int) -> List[Word]:
@@ -521,7 +550,7 @@ def evaluate(corpus: Corpus,
             #print(f"encoder_outputs.shape={encoder_outputs.shape}\tmax_decoder_seq={corpus.max_label_length}")
             decoder_output=decoder.decode_sequence(encoder_outputs=encoder_outputs,
                                                    start_of_sequence_symbol=corpus.characters.start_of_sequence_int,
-                                                   max_length=corpus.max_label_length)
+                                                   max_length=corpus.label_tensor_length)
             _, top_i = decoder_output.topk(k=1)
 
             predictions = top_i.squeeze(dim=2).squeeze(dim=1).tolist()
@@ -642,8 +671,8 @@ def train_iters(*,  #data: Data,
 
             actual_batch_size: int = min(batch_size, input_tensor.shape[1])
 
-            verify_shape(tensor=input_tensor, expected=[corpus.max_word_length, actual_batch_size])
-            verify_shape(tensor=target_tensor, expected=[corpus.max_label_length, actual_batch_size])
+            verify_shape(tensor=input_tensor, expected=[corpus.word_tensor_length, actual_batch_size])
+            verify_shape(tensor=target_tensor, expected=[corpus.label_tensor_length, actual_batch_size])
 
             # print(f"input_tensor.shape={input_tensor.shape}\t\ttarget_tensor.shape={target_tensor.shape}")
             # sys.exit()
@@ -656,8 +685,8 @@ def train_iters(*,  #data: Data,
                                 decoder_optimizer=decoder_optimizer,
                                 criterion=criterion,
                                 device=device,
-                                max_src_length=corpus.max_word_length,
-                                max_tgt_length=corpus.max_label_length,
+                                max_src_length=corpus.word_tensor_length,
+                                max_tgt_length=corpus.label_tensor_length,
                                 batch_size=actual_batch_size,
                                 start_of_sequence_symbol=corpus.characters.start_of_sequence_int,
                                 teacher_forcing_ratio=teacher_forcing_ratio)
@@ -679,10 +708,11 @@ def run_training():
     teacher_forcing_ratio = 0.0
 
     device: torch.device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+    training_filename = "data/shakespeare50k.txt" if torch.cuda.is_available() else "data/shakespeare.tiny"
 
-    training_corpus = Corpus(name="training", filename="data/shakespeare50k.txt", max_length=max_length, device=device)
+    training_corpus = Corpus(name="training", filename=training_filename, max_length=max_length, device=device)
     test_corpus = Corpus(name="test", filename="data/shakespeare.test", vocab=training_corpus.characters,
-                         max_length=training_corpus.max_word_length, device=device)
+                         max_length=training_corpus._max_word_length, device=device)
 
     #for word in test_corpus.words:
     #    print(f"{''.join(word.characters)}\t{''.join(word.label)}")
@@ -699,7 +729,7 @@ def run_training():
                                    num_hidden_layers=1,
                                    output_size=len(training_corpus.characters),
                                    dropout_p=0.1,
-                                   max_src_length=training_corpus.max_word_length).to(device=device)
+                                   max_src_length=training_corpus.word_tensor_length).to(device=device)
 
     train_iters(corpus=training_corpus,
                 encoder=encoder1,
